@@ -126,7 +126,7 @@ def read_bytes(path: PathLike) -> bytes:
         ) from exc
 
 
-def looks_binary(data: bytes) -> bool:
+def looks_binary(data: bytes, *, truncated: bool = False) -> bool:
     if not data:
         return False
     for bom, _, _ in _BOMS:
@@ -134,16 +134,24 @@ def looks_binary(data: bytes) -> bool:
             return False
     if b"\x00" in data:
         return True
-    sample = data[:8192]
-    try:
-        sample.decode("utf-8")
-        return False
-    except UnicodeDecodeError:
-        pass
+    # Large files are classified from a sample; a UTF-8 sample can end in the
+    # middle of a multi-byte character.  Only trim for genuinely truncated
+    # samples, never for a complete file with invalid trailing bytes.
+    attempts = [data]
+    if truncated:
+        attempts.extend(data[: len(data) - trim] for trim in range(1, 4))
+    for candidate in attempts:
+        if not candidate:
+            continue
+        try:
+            candidate.decode("utf-8")
+            return False
+        except UnicodeDecodeError:
+            continue
     try:
         from charset_normalizer import from_bytes
 
-        best = from_bytes(sample).best()
+        best = from_bytes(data[:8192]).best()
         if best is None:
             return True
         if best.encoding and best.encoding.lower().replace("_", "-") in {
@@ -156,8 +164,8 @@ def looks_binary(data: bytes) -> bool:
             "utf-32-be",
         }:
             return False
-        # A low-confidence guess is safer treated as binary than mangled on write.
-        return float(best.chaos) > 0.35 or float(best.confidence or 0.0) < 0.2
+        # A high-chaos guess is safer treated as binary than mangled on write.
+        return float(getattr(best, "chaos", 1.0) or 1.0) > 0.35
     except Exception:
         return True
 

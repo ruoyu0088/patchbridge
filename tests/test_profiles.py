@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from patchbridge.errors import AppError
+from patchbridge.fsutil import looks_binary
 from patchbridge.profiles import parse_profile_text, serialize_profile
 from patchbridge.scanner import scan_project
 
@@ -81,6 +82,25 @@ def test_scanner_skips_git_binary_large(tmp_path: Path):
     assert result.skipped["binary"] == 1
     assert result.skipped["large"] == 1
     assert result.skipped["ignored"] >= 1
+
+
+def test_utf8_boundary_is_not_binary(tmp_path: Path):
+    payload = b"a" * 8191 + "中".encode("utf-8") + b"\nconst answer = 1;\n"
+    assert not looks_binary(payload)
+    assert not looks_binary(payload[:8192], truncated=True)
+
+    root = tmp_path / "p"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "content.js").write_bytes(payload)
+    profile = serialize_profile(
+        profile_id="p",
+        name="P",
+        root=str(root),
+        mode="exclude",
+        rules=[],
+    )
+    result = scan_project(profile, {"large_file_bytes": 1024 * 1024, "max_files": 100})
+    assert [item.path for item in result.files] == ["src/content.js"]
 
 
 def test_scanner_include_mode(tmp_path: Path):

@@ -125,7 +125,7 @@ def scan_project(
                 if stat.st_size:
                     with open(path, "rb") as fh:
                         sample = fh.read(min(stat.st_size, 1024 * 1024))
-                    if looks_binary(sample):
+                    if looks_binary(sample, truncated=stat.st_size > len(sample)):
                         result.skipped["binary"] += 1
                         continue
                 else:
