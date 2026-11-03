@@ -1,0 +1,3 @@
+{"seq": 1, "id": "ev-cc853cbb5386", "type": "pack", "at": "2026-11-03T11:38:46.317629Z", "data": {"file_count": 1, "total_bytes": 269, "bundle_sha256": "fbf3afc1ca27c0e15ff297f9609e681e4b3948a1de8c5c5ff7f62949ee49f07c"}}
+{"seq": 2, "id": "ev-b7b453ab433a", "type": "parse", "at": "2026-11-03T11:38:46.405028Z", "data": {"patches": 1, "warnings": 0, "answer_bytes": 518}}
+{"seq": 3, "id": "ev-68fd45b4ceeb", "type": "dry_run", "at": "2026-11-03T11:38:46.511540Z", "data": {"patch_ids": ["p0001"], "ok": true, "conflicts": 0, "hash_changed": 0}}

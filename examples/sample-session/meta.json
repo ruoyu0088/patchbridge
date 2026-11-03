@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "sample-session",
+  "project_id": "demo",
+  "project_name": "PatchBridge Demo",
+  "root": "C:\\Users\\ruoyu\\workspace\\patchbridge\\examples\\demo-project",
+  "profile": {
+    "id": "demo",
+    "name": "PatchBridge Demo",
+    "root": "C:\\Users\\ruoyu\\workspace\\patchbridge\\examples\\demo-project",
+    "mode": "exclude",
+    "rules": [
+      ".git/",
+      "__pycache__/",
+      "*.pyc",
+      ".pytest_cache/",
+      "!README.md"
+    ]
+  },
+  "title": "示例：为 divide 增加除零保护",
+  "created_at": "2026-11-03T11:38:46.308660Z",
+  "updated_at": "2026-11-03T11:38:46.511540Z",
+  "status": "parsed",
+  "file_count": 1,
+  "total_bytes": 269,
+  "bundle_bytes": 2261,
+  "bundle_sha256": "fbf3afc1ca27c0e15ff297f9609e681e4b3948a1de8c5c5ff7f62949ee49f07c",
+  "reloaded_from": null
+}

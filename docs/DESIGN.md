@@ -1,0 +1,253 @@
+# PatchBridge 设计说明
+
+## 1. 目标与边界
+
+PatchBridge 解决的是“代码量大时，让 Web 版 AI 改几行代码”的上下文搬运问题：
+
+- 工具不调用任何在线模型 API。
+- 工具不做浏览器自动化。
+- 用户在工具和 Web AI 之间手工复制。
+- 工具负责：profile 过滤、文件树、打包、回答解析、补丁预览、dry-run、备份、应用、撤回、
+  历史、归档。
+
+应用补丁要求工程位于 git 仓库中；工具会检查 `git rev-parse --is-inside-work-tree`。
+实际写盘使用内置事务式行级引擎，以保证 CRLF/BOM/编码可控；导出的标准 patch 仍可用
+`git apply` 验证和应用。
+
+## 2. 技术选型
+
+| 层 | 选型 | 说明 |
+|---|---|---|
+| 后端 | Python 3.11+、FastAPI、Uvicorn | 单进程本地 HTTP 服务 |
+| 前端 | Vue 3 全局运行时 + 原生 CSS | 无构建、离线可用 |
+| 文件匹配 | pathspec | gitignore 语义，支持 `!` 取反 |
+| 编码检测 | charset-normalizer | 非 UTF-8 文本的保守检测 |
+| 测试 | pytest + FastAPI TestClient | 核心逻辑无 GUI 可测 |
+| 存储 | 纯文本 + JSON + JSONL | 不使用数据库 |
+
+## 3. 运行形态
+
+- 默认绑定 `127.0.0.1:8765`，端口冲突时顺序尝试后续端口。
+- 单进程、单用户。按会话/文件系统操作加锁。
+- `start.bat` 设置 `MKL_THREADING_LAYER=TBB` 并使用 `C:\pixi_env` 的解释器；找不到时回退
+  到 PATH 上的 `python`。
+- 所有文件系统写操作都在后端；前端只通过 JSON API 操作。
+
+## 4. 数据目录
+
+```text
+data/
+  settings.json
+  index.json
+  profiles/<id>.profile
+  sessions/<session_id>/
+    meta.json
+    requirement.md
+    selection.json
+    bundle.txt
+    answer.md
+    parsed.json
+    patches/
+      manifest.json
+      p0001.diff
+    events.jsonl
+  sessions/<session_id>.zip
+  backups/<session_id>/<apply_id>/
+    manifest.json
+    before/0000.bin
+    after/0000.bin
+    combined.patch
+    journal.json
+  tmp/
+  logs/app.log
+```
+
+### 4.1 Profile
+
+纯文本、应用管理，语法：
+
+```ini
+# PatchBridge profile v1
+name: 示例工程
+root: C:\Users\me\project
+mode: exclude
+
+[rules]
+.git/
+node_modules/
+*.log
+!keep.log
+```
+
+- `root` 必须是绝对路径；允许 `~` 展开。
+- `mode`：
+  - `exclude`：默认可选，规则命中则排除；`!` 再纳入。
+  - `include`：只有规则命中的文件才可选；`!` 再排除。
+- 规则按 gitignore 语义，最后匹配优先。
+- `.git/`、`.hg/`、`.svn/` 永远跳过；工具数据目录若位于工程内也会跳过。
+- 根目录不可访问时工程仍显示，但禁止扫描和打包。
+
+### 4.2 打包文本
+
+固定分隔符，包含相对路径：
+
+```text
+# PATCHBRIDGE BUNDLE v1
+project: ...
+root: ...
+generated_at: ...
+files: 3
+bytes: 12345
+
+===== PATCHBRIDGE INSTRUCTIONS BEGIN =====
+...
+===== PATCHBRIDGE INSTRUCTIONS END =====
+
+===== PATCHBRIDGE TREE BEGIN =====
+...
+===== PATCHBRIDGE TREE END =====
+
+===== PATCHBRIDGE REQUIREMENT BEGIN =====
+...
+===== PATCHBRIDGE REQUIREMENT END =====
+
+===== PATCHBRIDGE FILE BEGIN: src/app.py =====
+<原始内容>
+===== PATCHBRIDGE FILE END: src/app.py =====
+```
+
+- 文件内容不做转义、缩进调整或换行归一化。
+- 文件末尾没有换行时，仅插入一个结构性换行让结束标记独立成行；
+  `selection.json` 记录 `final_newline:false`。
+- 打包前扫描需求和文件内容中的保留标记；发现冲突则拒绝并列出文件。
+- `selection.json` 保存每个文件的 `sha256`、编码、BOM、EOL、末尾换行信息。
+- token 数是粗略提示（ASCII 约 4 字符/token，非 ASCII 约 1 字符/token），不是硬限制。
+
+**给 AI 的两种方式**：界面同时提供“复制完整文本”和“复制文件路径”。前者适合直接粘贴；
+后者用于在本地打开或上传 `bundle.txt`。
+
+### 4.3 回答解析
+
+内置提示词要求：
+
+```markdown
+## 修改说明
+## Commit 建议
+## 文件补丁
+### src/app.py
+```diff
+...
+```
+```
+
+解析器容错：
+
+- 中英文标题、关键词、缺少标题都尽量识别。
+- 代码块有无语言标记都可。
+- 无代码围栏时扫描 `diff --git` / `---`/`+++` / `@@`。
+- 路径支持 `a/`、`b/`、绝对路径、反斜杠、标题路径。
+- 自动计算原始 `-pN`，规范化成 `p1`。
+- 拒绝 `..`、绝对路径越界、`.git/`、重复路径和删除/重命名/二进制补丁。
+- 所有不确定处写入 warnings；解析结果可手工修改。
+
+### 4.4 会话与事件
+
+- 会话 ID 是时间有序字符串，唯一。
+- `patches/manifest.json` 显式记录存储文件名与相对路径的映射，禁止根据文件名反推路径。
+- `events.jsonl` 只追加，事件类型包括 `pack`、`parse`、`dry_run`、`apply`、`revert`、
+  `archive`、`reload`、`edit`、`abandon`、`apply_failed`。
+- `meta.json` 中的状态是缓存；列表状态由事件和 parsed 是否存在推导。
+- `index.json` 是缓存，写入使用临时文件 + `os.replace` + fsync；启动和列表时校验，
+  发现目录/压缩包集合与索引不一致会自动重建，也可手动重建。
+
+### 4.5 备份与状态机
+
+应用前为每个受影响文件保存：
+
+- 原始相对路径
+- 备份文件位置
+- 应用前是否存在
+- 应用前 sha256
+- 应用后 sha256
+- 文件 mode（如可读取）
+- 应用后内容（用于“应用后 vs 当前磁盘”比较）
+
+状态：
+
+```text
+packed -> parsed -> applied -> reverted
+                    |  ^
+                    |  └── 其他未应用文件可继续按批次 apply
+                    └── 首次 apply 后补丁/commit 锁定
+```
+
+- 每批 apply 是一个事务，事件中记录批次 `apply_id`。
+- 同一文件在一个会话中最多应用一次。
+- 部分应用后，剩余文件仍可再次 apply，但补丁内容不可再编辑。
+- 撤回严格 LIFO：只能撤回最后一个未撤回批次。
+- 需要修改已应用补丁时，使用“重新载入”创建新会话。
+- 撤回时若文件当前内容与应用后不一致，必须显式确认；确认后按备份恢复。
+
+### 4.6 补丁引擎
+
+文件行模型：
+
+- 原始每行 EOL 保留；新行使用文件主 EOL。
+- UTF-8/UTF-16 的 BOM 保留；其他编码通过 charset-normalizer 保守检测，无法无损往返则按
+  不支持文本处理。
+- hunk 上下文精确匹配；找不到时在文件中搜索唯一/最近匹配并记录 offset warning。
+- 支持新增文件；不支持删除、重命名、mode 变更、二进制补丁。
+- 应用前全部在内存试算，然后备份、写 journal、逐文件原子替换；任一失败按备份整体回滚。
+- 启动时扫描未完成 journal：若 apply 事件尚未落盘则回滚，若事件已落盘则只清理 journal。
+
+### 4.7 归档
+
+- 归档 zip 的条目是相对于会话目录的路径，结构与未归档目录一致。
+- 拒绝绝对路径、盘符、`..`、反斜杠、符号链接、重复条目和超限解压体积。
+- 查看归档详情时按 member 读取，不整体解压。
+- 撤回/应用等 mutation 会先把 zip 安全解压回会话目录。
+- 重新载入从 zip 按 member 读取并创建新会话，不修改原会话。
+- 自动归档默认关闭；只处理没有未撤回 apply、状态为 `reverted` 或 `abandoned` 且超过
+  指定天数的会话。手动归档有未撤回 apply 时要求二次确认。
+
+## 5. 安全底线
+
+1. 所有写操作只在后端。
+2. apply 前重新 dry-run + 校验 hash/范围/git 仓库；hash 变化需显式确认。
+3. 应用前备份；新增文件撤回删除。
+4. 撤回 LIFO + after hash 校验。
+5. 编码、BOM、换行保持。
+6. zip 解压安全，临时目录异常清理。
+7. 事件只追加；meta/index/settings 原子写。
+8. 全局异常处理返回结构化 JSON，不把堆栈抛给前端。
+9. 解析结果允许手工修正。
+10. 绑定回环地址；无公网认证设计。
+
+## 6. 已知限制
+
+- v1 不做 hunk 级勾选。
+- 只支持文本补丁；删除/重命名/二进制/权限补丁拒绝。
+- 应用要求 git 仓库；内部引擎不依赖 `git apply` 写盘。
+- 非 UTF-8 编码依赖启发式检测；检测不确定时按二进制/不支持处理。
+- 备份过期后“应用后 vs 当前磁盘”的内容差异不可用。
+- 跨会话撤回冲突依靠 hash 校验和用户确认，不实现全局应用栈。
+- 本地单用户工具，不适合直接暴露到公网。
+- 大工程扫描有 `max_files` 上限；超过时收窄 profile。
+
+## 7. 平台依赖
+
+| 平台 | 启动 | 依赖 |
+|---|---|---|
+| Windows 10/11 | 双击 `start.bat` | Python 3.11+、Git、依赖包 |
+| macOS / Linux | `PYTHONPATH=src python -m patchbridge --open` | Python 3.11+、Git、依赖包 |
+
+`start.bat` 使用 CRLF 换行，并优先使用 `C:\pixi_env\.pixi\envs\default\python.exe`。
+前端 Vue 运行时已 vendored，不需要联网或 Node 构建。
+
+## 8. 测试策略
+
+- 单元：profile、扫描、打包、解析、diff、编码、zip 安全。
+- 集成：会话、索引、备份、部分应用、LIFO 撤回、归档、重新载入。
+- 端到端：FastAPI 流程、导出 patch 在干净 git 副本上 `git apply`。
+- 前端：人工冒烟；核心逻辑不依赖浏览器。
+- 逐条验收映射见 `docs/ACCEPTANCE_MATRIX.md`。

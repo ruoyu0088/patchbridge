@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "root": "C:\\Users\\ruoyu\\workspace\\patchbridge\\examples\\demo-project",
+  "profile": {
+    "id": "demo",
+    "name": "PatchBridge Demo",
+    "root": "C:\\Users\\ruoyu\\workspace\\patchbridge\\examples\\demo-project",
+    "mode": "exclude",
+    "rules": [
+      ".git/",
+      "__pycache__/",
+      "*.pyc",
+      ".pytest_cache/",
+      "!README.md"
+    ]
+  },
+  "total_bytes": 269,
+  "files": [
+    {
+      "path": "src/calculator.py",
+      "size": 269,
+      "sha256": "2f93715064e4a64a3147a2d0945ca717df3c66e47597d9170a2d131156efb3f7",
+      "encoding": "utf-8",
+      "bom": false,
+      "eol": "lf",
+      "final_newline": true
+    }
+  ]
+}

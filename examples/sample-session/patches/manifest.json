@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "patches": [
+    {
+      "id": "p0001",
+      "file": "p0001.diff",
+      "path": "src/calculator.py",
+      "sha256": "2948b15711a811a6e132bedd0d62e3ff91203ca0ee569fe3bb9b89e2a46aaba4",
+      "added": 2,
+      "removed": 0,
+      "new_file": false,
+      "p_level": 1,
+      "warnings": [],
+      "unsupported": null
+    }
+  ]
+}

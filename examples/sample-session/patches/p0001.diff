@@ -1,0 +1,8 @@
+diff --git a/src/calculator.py b/src/calculator.py
+--- a/src/calculator.py
++++ b/src/calculator.py
+@@ -9,2 +9,4 @@
+ def divide(left: float, right: float) -> float:
++    if right == 0:
++        return None
+     return left / right

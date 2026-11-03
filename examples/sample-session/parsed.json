@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "parsed_at": "2026-11-03T11:38:46.402550Z",
+  "explanation": "为 divide 增加除零保护：当 right 为 0 时返回 None，避免抛出 ZeroDivisionError。该行为适用于整数和浮点数，不改变其他分支。",
+  "commit_message": "fix(calculator): guard division by zero",
+  "warnings": [],
+  "patches": [
+    {
+      "id": "p0001",
+      "file": "p0001.diff",
+      "path": "src/calculator.py",
+      "sha256": "2948b15711a811a6e132bedd0d62e3ff91203ca0ee569fe3bb9b89e2a46aaba4",
+      "added": 2,
+      "removed": 0,
+      "new_file": false,
+      "p_level": 1,
+      "warnings": [],
+      "unsupported": null
+    }
+  ]
+}

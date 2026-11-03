@@ -1,0 +1,11 @@
+data/
+data-dev/
+.tmp-*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.idea/
+.vscode/
+*.log
+*.tmp

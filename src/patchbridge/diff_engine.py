@@ -1,0 +1,566 @@
+from __future__ import annotations
+
+import re
+import shlex
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable
+
+from .errors import AppError
+from .fsutil import (
+    Line,
+    TextFileInfo,
+    decode_text_file,
+    encode_text_file,
+    join_lines,
+    normalize_rel_path,
+    split_lines_keep_eol,
+)
+
+_HUNK_RE = re.compile(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@")
+_HEADER_RE = re.compile(r"^(---|\+\+\+)\s+(.*)$")
+
+
+@dataclass
+class DiffLine:
+    tag: str  # ' ', '+', '-', '\\'
+    content: str
+    no_newline: bool = False
+
+
+@dataclass
+class Hunk:
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    lines: list[DiffLine] = field(default_factory=list)
+
+    @property
+    def old_lines(self) -> list[DiffLine]:
+        return [line for line in self.lines if line.tag in {" ", "-"}]
+
+    @property
+    def new_lines(self) -> list[DiffLine]:
+        return [line for line in self.lines if line.tag in {" ", "+"}]
+
+    @property
+    def added(self) -> int:
+        return sum(1 for line in self.lines if line.tag == "+")
+
+    @property
+    def removed(self) -> int:
+        return sum(1 for line in self.lines if line.tag == "-")
+
+
+@dataclass
+class FilePatch:
+    raw: str
+    path: str = ""
+    old_path: str = ""
+    new_path: str = ""
+    p_level: int = 1
+    new_file: bool = False
+    deleted: bool = False
+    added: int = 0
+    removed: int = 0
+    hunks: list[Hunk] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    unsupported: str | None = None
+
+    def canonical(self) -> str:
+        return canonical_patch(self)
+
+
+@dataclass
+class ApplyResult:
+    data: bytes
+    text: str
+    added: int
+    removed: int
+    warnings: list[str] = field(default_factory=list)
+    new_file: bool = False
+
+
+def _strip_path_token(value: str) -> str:
+    value = value.strip()
+    if "\t" in value:
+        value = value.split("\t", 1)[0].strip()
+    if value.startswith('"'):
+        try:
+            parts = shlex.split(value)
+            if parts:
+                return parts[0]
+        except ValueError:
+            pass
+    return value
+
+
+def _strip_prefixes(value: str) -> list[tuple[str, int]]:
+    """Return (candidate, number_of_components_stripped)."""
+    value = value.replace("\\", "/").strip()
+    if value.startswith("./"):
+        value = value[2:]
+    result: list[tuple[str, int]] = [(value, 0)]
+    parts = [p for p in value.split("/") if p not in ("", ".")]
+    for count in range(1, min(6, len(parts))):
+        result.append(("/".join(parts[count:]), count))
+    return result
+
+
+def _absolute_to_relative(value: str, root: Path, known: set[str]) -> tuple[str, int] | None:
+    try:
+        p = Path(value)
+        if not p.is_absolute():
+            return None
+        try:
+            rel = p.resolve().relative_to(root.resolve()).as_posix()
+            return rel, 0
+        except (OSError, ValueError):
+            pass
+    except OSError:
+        pass
+    # Fall back to suffix matching for paths copied from another machine.
+    value = value.replace("\\", "/")
+    best: str | None = None
+    for known_path in known:
+        if value.endswith("/" + known_path):
+            if best is None or len(known_path) > len(best):
+                best = known_path
+    if best:
+        return best, 0
+    return None
+
+
+def resolve_patch_path(
+    value: str,
+    *,
+    root: Path,
+    known_paths: Iterable[str] = (),
+) -> tuple[str, int]:
+    if not value or value == "/dev/null":
+        raise AppError("invalid_path", "补丁路径为空")
+    known = {normalize_rel_path(p) for p in known_paths}
+    value = _strip_path_token(value)
+    if value == "/dev/null":
+        raise AppError("invalid_path", "补丁路径为 /dev/null")
+    if any(part == ".." for part in value.replace("\\", "/").split("/")):
+        raise AppError("path_traversal", f"补丁路径包含上级目录：{value}")
+    absolute = _absolute_to_relative(value, root, known)
+    if absolute:
+        return absolute
+    for candidate, stripped in _strip_prefixes(value):
+        try:
+            rel = normalize_rel_path(candidate)
+        except AppError:
+            continue
+        if rel in known:
+            return rel, stripped
+    if not known:
+        for candidate, stripped in _strip_prefixes(value):
+            try:
+                return normalize_rel_path(candidate), stripped
+            except AppError:
+                continue
+    # Unknown path: strip one conventional a/ or b/ prefix.
+    parts = [p for p in value.replace("\\", "/").split("/") if p not in ("", ".")]
+    if parts and parts[0] in {"a", "b"} and len(parts) > 1:
+        return normalize_rel_path("/".join(parts[1:])), 1
+    for candidate, stripped in _strip_prefixes(value):
+        try:
+            return normalize_rel_path(candidate), stripped
+        except AppError:
+            continue
+    raise AppError("invalid_path", f"无法归一化补丁路径：{value}")
+
+
+def _parse_git_header(line: str) -> tuple[str, str] | None:
+    rest = line[len("diff --git ") :].strip()
+    try:
+        parts = shlex.split(rest)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    except ValueError:
+        pass
+    # Unquoted paths containing spaces: split at the last " b/" marker.
+    match = re.match(r"^(a/.+)\s+(b/.+)$", rest)
+    if match:
+        return match.group(1), match.group(2)
+    match = re.match(r"^(\S+)\s+(\S+)$", rest)
+    if match:
+        return match.group(1), match.group(2)
+    return None
+
+
+def _split_sections(lines: list[str]) -> list[tuple[int, int, str]]:
+    starts: list[int] = []
+    for index, line in enumerate(lines):
+        if line.startswith("diff --git "):
+            starts.append(index)
+    if not starts:
+        # Un-fenced diff with only ---/+++ headers.  A single code block can
+        # contain several files in this style, so collect every header pair.
+        for index, line in enumerate(lines):
+            if (
+                line.startswith("--- ")
+                and index + 1 < len(lines)
+                and lines[index + 1].startswith("+++ ")
+            ):
+                starts.append(index)
+    if not starts:
+        return []
+    sections: list[tuple[int, int, str]] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(lines)
+        sections.append((start, end, "\n".join(lines[start:end])))
+    return sections
+
+
+def parse_unified_diff(
+    text: str,
+    *,
+    root: Path,
+    known_paths: Iterable[str] = (),
+) -> list[FilePatch]:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    sections = _split_sections(lines)
+    if not sections:
+        return []
+    known = list(known_paths)
+    patches: list[FilePatch] = []
+    for _, _, raw_section in sections:
+        patch = _parse_one_section(raw_section, root=root, known_paths=known)
+        if patch is not None:
+            patches.append(patch)
+    return patches
+
+
+def _parse_one_section(
+    section: str,
+    *,
+    root: Path,
+    known_paths: list[str],
+) -> FilePatch | None:
+    lines = section.split("\n")
+    patch = FilePatch(raw=section)
+    if not lines:
+        return None
+    index = 0
+    if lines[0].startswith("diff --git "):
+        pair = _parse_git_header(lines[0])
+        if pair:
+            patch.old_path, patch.new_path = pair
+        index = 1
+    old_header: str | None = None
+    new_header: str | None = None
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("new file mode"):
+            patch.new_file = True
+        elif line.startswith("deleted file mode"):
+            patch.deleted = True
+        elif line.startswith("rename from") or line.startswith("rename to"):
+            patch.unsupported = "不支持重命名补丁"
+        elif line.startswith("copy from") or line.startswith("copy to"):
+            patch.unsupported = "不支持复制文件补丁"
+        elif line.startswith("GIT binary patch") or line.startswith("Binary files"):
+            patch.unsupported = "不支持二进制补丁"
+        match = _HEADER_RE.match(line)
+        if match:
+            token = _strip_path_token(match.group(2))
+            if match.group(1) == "---":
+                old_header = token
+            else:
+                new_header = token
+            index += 1
+            continue
+        if line.startswith("@@"):
+            break
+        index += 1
+
+    if old_header == "/dev/null":
+        patch.new_file = True
+    if new_header == "/dev/null":
+        patch.deleted = True
+
+    candidates: list[tuple[str, int]] = []
+    for header in (new_header, old_header):
+        if header and header != "/dev/null":
+            try:
+                candidates.append(
+                    resolve_patch_path(header, root=root, known_paths=known_paths)
+                )
+            except AppError:
+                pass
+    if candidates:
+        # Prefer the new path when both exist.
+        patch.path, patch.p_level = candidates[0]
+    elif patch.new_path and patch.new_path != "/dev/null":
+        try:
+            patch.path, patch.p_level = resolve_patch_path(
+                patch.new_path, root=root, known_paths=known_paths
+            )
+        except AppError:
+            pass
+    elif patch.old_path and patch.old_path != "/dev/null":
+        try:
+            patch.path, patch.p_level = resolve_patch_path(
+                patch.old_path, root=root, known_paths=known_paths
+            )
+        except AppError:
+            pass
+
+    if patch.deleted:
+        patch.unsupported = "不支持删除文件补丁"
+    if not patch.path:
+        patch.warnings.append("无法从补丁头确定文件路径")
+
+    # Parse hunks.
+    current: Hunk | None = None
+    while index < len(lines):
+        line = lines[index]
+        match = _HUNK_RE.match(line)
+        if match:
+            if current is not None:
+                patch.hunks.append(current)
+            current = Hunk(
+                old_start=int(match.group(1)),
+                old_count=int(match.group(2) or 1),
+                new_start=int(match.group(3)),
+                new_count=int(match.group(4) or 1),
+            )
+            index += 1
+            continue
+        if current is None:
+            index += 1
+            continue
+        if line.startswith("diff --git "):
+            break
+        if line.startswith("\\ No newline at end of file"):
+            if current.lines:
+                current.lines[-1].no_newline = True
+            index += 1
+            continue
+        if not line:
+            # A bare blank normally separates the diff from the next section.
+            # A true empty context line is written as a single space.
+            break
+        tag = line[0]
+        if tag not in {" ", "+", "-"}:
+            # A heading or unrelated prose ends the current hunk.
+            break
+        current.lines.append(DiffLine(tag, line[1:]))
+        index += 1
+    if current is not None:
+        patch.hunks.append(current)
+
+    if not patch.hunks and not patch.unsupported:
+        patch.unsupported = "补丁没有可解析的 hunk"
+
+    patch.added = sum(hunk.added for hunk in patch.hunks)
+    patch.removed = sum(hunk.removed for hunk in patch.hunks)
+    for hunk in patch.hunks:
+        actual_old = len(hunk.old_lines)
+        actual_new = len(hunk.new_lines)
+        if actual_old != hunk.old_count:
+            patch.warnings.append(
+                f"hunk 旧行数头写 {hunk.old_count}，实际 {actual_old}"
+            )
+        if actual_new != hunk.new_count:
+            patch.warnings.append(
+                f"hunk 新行数头写 {hunk.new_count}，实际 {actual_new}"
+            )
+    return patch
+
+
+def canonical_patch(patch: FilePatch) -> str:
+    if patch.unsupported:
+        raise AppError(
+            "unsupported_patch",
+            patch.unsupported,
+            status=422,
+            details={"path": patch.path},
+        )
+    if not patch.path:
+        raise AppError("invalid_patch", "补丁缺少文件路径")
+    path = normalize_rel_path(patch.path)
+    lines: list[str] = [f"diff --git a/{path} b/{path}"]
+    if patch.new_file:
+        lines.append("new file mode 100644")
+        lines.append("--- /dev/null")
+        lines.append(f"+++ b/{path}")
+    else:
+        lines.append(f"--- a/{path}")
+        lines.append(f"+++ b/{path}")
+    for hunk in patch.hunks:
+        old_count = len(hunk.old_lines)
+        new_count = len(hunk.new_lines)
+        lines.append(
+            f"@@ -{hunk.old_start},{old_count} +{hunk.new_start},{new_count} @@"
+        )
+        for line in hunk.lines:
+            if line.tag == "\\":
+                lines.append("\\ No newline at end of file")
+            else:
+                lines.append(line.tag + line.content)
+                if line.no_newline:
+                    lines.append("\\ No newline at end of file")
+    return "\n".join(lines) + "\n"
+
+
+def _find_sequence(haystack: list[str], needle: list[str], expected: int) -> tuple[int, bool]:
+    if not needle:
+        return max(0, min(expected, len(haystack))), False
+    if 0 <= expected <= len(haystack) - len(needle):
+        if haystack[expected : expected + len(needle)] == needle:
+            return expected, False
+    matches = [
+        i
+        for i in range(0, len(haystack) - len(needle) + 1)
+        if haystack[i : i + len(needle)] == needle
+    ]
+    if not matches:
+        raise AppError(
+            "patch_context_mismatch",
+            "补丁上下文与当前文件不匹配",
+            details={"expected_line": expected + 1},
+        )
+    matches.sort(key=lambda value: abs(value - expected))
+    return matches[0], True
+
+
+def apply_file_patch(
+    patch: FilePatch,
+    current: bytes | None,
+    *,
+    path: str | None = None,
+) -> ApplyResult:
+    if patch.unsupported:
+        raise AppError("unsupported_patch", patch.unsupported, details={"path": patch.path})
+    if patch.deleted:
+        raise AppError("unsupported_patch", "不支持删除文件补丁", details={"path": patch.path})
+    path = path or patch.path
+    if patch.new_file:
+        if current is not None:
+            raise AppError(
+                "new_file_exists",
+                f"补丁要新增文件，但目标已存在：{path}",
+                details={"path": path},
+            )
+        return _apply_new_file(patch)
+    if current is None:
+        raise AppError(
+            "file_missing",
+            f"目标文件不存在：{path}",
+            details={"path": path},
+        )
+    try:
+        info = decode_text_file(current)
+    except Exception as exc:
+        raise AppError(
+            "unsupported_text",
+            f"目标文件不是受支持的文本：{path}",
+            details={"path": path, "reason": str(exc)},
+        ) from exc
+    work = split_lines_keep_eol(info.text)
+    offset = 0
+    warnings: list[str] = []
+    for hunk_index, hunk in enumerate(patch.hunks):
+        old_lines = hunk.old_lines
+        new_lines = hunk.new_lines
+        expected = max(0, hunk.old_start - 1 + offset)
+        old_seq = [line.content for line in old_lines]
+        index, shifted = _find_sequence([line.content for line in work], old_seq, expected)
+        if shifted:
+            warnings.append(
+                f"hunk 在文件中偏移到第 {index + 1} 行应用（原期望第 {expected + 1} 行）"
+            )
+        touches_eof = index + len(old_lines) >= len(work)
+        rebuilt: list[Line] = []
+        old_index = 0
+        for line in new_lines:
+            if line.tag == " ":
+                original_pos = index + old_index
+                if 0 <= original_pos < len(work):
+                    rebuilt.append(Line(line.content, work[original_pos].eol))
+                else:
+                    rebuilt.append(Line(line.content, info.eol))
+                old_index += 1
+            elif line.tag == "+":
+                rebuilt.append(Line(line.content, info.eol))
+            elif line.tag == "-":
+                old_index += 1
+        if touches_eof and hunk_index == len(patch.hunks) - 1 and rebuilt:
+            last = new_lines[-1] if new_lines else None
+            if last is not None and last.no_newline:
+                rebuilt[-1] = Line(rebuilt[-1].content, "")
+            else:
+                rebuilt[-1] = Line(rebuilt[-1].content, rebuilt[-1].eol or info.eol)
+        work[index : index + len(old_lines)] = rebuilt
+        offset += len(new_lines) - len(old_lines)
+
+    text = join_lines(work)
+    data = encode_text_file(info, text)
+    return ApplyResult(
+        data=data,
+        text=text,
+        added=sum(hunk.added for hunk in patch.hunks),
+        removed=sum(hunk.removed for hunk in patch.hunks),
+        warnings=warnings,
+        new_file=False,
+    )
+
+
+def _apply_new_file(patch: FilePatch) -> ApplyResult:
+    contents: list[tuple[str, bool]] = []
+    for hunk in patch.hunks:
+        for line in hunk.new_lines:
+            contents.append((line.content, line.no_newline))
+    if not contents:
+        text = ""
+    else:
+        final_newline = not contents[-1][1]
+        text = "\n".join(content for content, _ in contents)
+        if final_newline:
+            text += "\n"
+    data = text.encode("utf-8")
+    return ApplyResult(
+        data=data,
+        text=text,
+        added=sum(hunk.added for hunk in patch.hunks),
+        removed=0,
+        warnings=[],
+        new_file=True,
+    )
+
+
+def summarize_patch(patch: FilePatch) -> dict[str, Any]:
+    return {
+        "path": patch.path,
+        "old_path": patch.old_path,
+        "new_path": patch.new_path,
+        "p_level": patch.p_level,
+        "new_file": patch.new_file,
+        "deleted": patch.deleted,
+        "added": patch.added,
+        "removed": patch.removed,
+        "warnings": list(patch.warnings),
+        "unsupported": patch.unsupported,
+    }
+
+
+def find_file_patch(
+    patches: list[FilePatch],
+    path: str,
+) -> FilePatch | None:
+    normalized = normalize_rel_path(path)
+    for patch in patches:
+        if normalize_rel_path(patch.path) == normalized:
+            return patch
+    return None
+
+
+def paths_overlap(a: str, b: str) -> bool:
+    pa = PurePosixPath(normalize_rel_path(a))
+    pb = PurePosixPath(normalize_rel_path(b))
+    return pa == pb

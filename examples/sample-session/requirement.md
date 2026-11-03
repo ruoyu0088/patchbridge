@@ -1,0 +1,1 @@
+给 divide 增加除零保护：当 right 为 0 时返回 None。
