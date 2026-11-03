@@ -75,6 +75,14 @@ def test_crlf_and_bom_metadata(project_root: Path, profile):
     assert "a\r\nb\r\n" in bundle.text
 
 
+def test_default_prompt_requires_exact_indentation():
+    path = Path(__file__).resolve().parents[1] / "src" / "patchbridge" / "prompts" / "default.md"
+    text = path.read_text(encoding="utf-8")
+    assert "逐字符" in text
+    assert "缩进" in text
+    assert "前导空格" in text
+
+
 def test_tree_rendering():
     tree = render_tree(["src/a.py", "src/b.py", "README.md"], "demo")
     assert "demo/" in tree

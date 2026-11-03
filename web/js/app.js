@@ -593,6 +593,10 @@ const SessionPage = {
     archivePath() {
       return (this.details && this.details.archive_path) || '';
     },
+    editorGutterText() {
+      const count = this.patchDraft ? this.patchDraft.split('\n').length : 1;
+      return Array.from({ length: count }, (_, index) => index + 1).join('\n');
+    },
   },
   mounted() {
     this.load();
@@ -796,13 +800,59 @@ const SessionPage = {
         this.reverting = false;
       }
     },
+    diagnosticsFor(patch) {
+      const status = this.statusFor(patch);
+      return status && status.diagnostics ? status.diagnostics : null;
+    },
+    mismatchFor(patch) {
+      const diagnostics = this.diagnosticsFor(patch);
+      return diagnostics ? diagnostics.first_mismatch : null;
+    },
+    patchRowClass(patch, row, index) {
+      const mismatch = this.mismatchFor(patch);
+      return {
+        'compare-add': row.tag === '+',
+        'compare-del': row.tag === '-',
+        'compare-mismatch': Boolean(mismatch && mismatch.patch_row_index === index),
+      };
+    },
+    fileRowClass(patch, row) {
+      const mismatch = this.mismatchFor(patch);
+      return {
+        'compare-mismatch': Boolean(mismatch && mismatch.file_line === row.line),
+      };
+    },
     startEditPatch(patch) {
       this.editingPatchId = patch.id;
       this.patchDraft = patch.content || '';
+      this.openPatches[patch.id] = true;
+      this.$nextTick(() => {
+        const ref = this.$refs.patchTextarea;
+        const textarea = Array.isArray(ref) ? ref[0] : ref;
+        if (textarea && textarea.focus) textarea.focus();
+      });
     },
     cancelEditPatch() {
       this.editingPatchId = null;
       this.patchDraft = '';
+    },
+    syncEditorScroll(event) {
+      const ref = this.$refs.patchGutter;
+      const gutter = Array.isArray(ref) ? ref[0] : ref;
+      if (gutter) gutter.scrollTop = event.target.scrollTop;
+    },
+    insertPatchTab(event) {
+      const textarea = event.target;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      this.patchDraft =
+        this.patchDraft.slice(0, start) + '  ' + this.patchDraft.slice(end);
+      this.$nextTick(() => {
+        textarea.selectionStart = textarea.selectionEnd = start + 2;
+      });
+    },
+    resetPatchDraft(patch) {
+      this.patchDraft = patch.content || '';
     },
     async savePatch(patch) {
       try {
@@ -1149,9 +1199,6 @@ const SessionPage = {
                       {{ scopeText(statusFor(patch).scope_status) }}
                     </span>
                     <span class="badge muted">p{{ patch.p_level || 1 }}</span>
-                    <span v-if="statusFor(patch) && statusFor(patch).reason" class="badge bad">
-                      {{ statusFor(patch).reason }}
-                    </span>
                   </template>
                   <template v-else>
                     <span class="badge ok">本批次已应用</span>
@@ -1162,11 +1209,87 @@ const SessionPage = {
                   <div v-for="(warning, idx) in statusFor(patch).warnings" :key="idx">• {{ warning }}</div>
                 </div>
 
+                <div v-if="statusFor(patch) && statusFor(patch).reason" class="conflict-summary">
+                  <div>{{ statusFor(patch).reason }}</div>
+                  <button
+                    v-if="!patchLocked && !isApplied(patch)"
+                    class="btn tiny"
+                    @click="startEditPatch(patch)"
+                  >打开补丁编辑器</button>
+                </div>
+
                 <div v-if="editingPatchId === patch.id" class="patch-edit">
-                  <textarea v-model="patchDraft" class="code-editor" spellcheck="false"></textarea>
-                  <div class="button-row">
-                    <button class="btn primary" @click="savePatch(patch)">保存并重新检查</button>
-                    <button class="btn" @click="cancelEditPatch">取消</button>
+                  <div class="editor-toolbar">
+                    <div>
+                      <strong>补丁编辑器</strong>
+                      <span class="muted">保存后会重新解析并 dry-run</span>
+                    </div>
+                    <div class="small-actions">
+                      <button class="btn tiny" @click="resetPatchDraft(patch)">恢复当前补丁</button>
+                    </div>
+                  </div>
+                  <div
+                    class="patch-editor-layout"
+                    :class="{ 'with-reference': Boolean(diagnosticsFor(patch)) }"
+                  >
+                    <div class="patch-editor-main">
+                      <div class="patch-editor-grid">
+                        <pre ref="patchGutter" class="editor-gutter">{{ editorGutterText }}</pre>
+                        <textarea
+                          ref="patchTextarea"
+                          v-model="patchDraft"
+                          class="code-editor patch-code-editor"
+                          spellcheck="false"
+                          @scroll="syncEditorScroll"
+                          @keydown.tab.prevent="insertPatchTab"
+                        ></textarea>
+                      </div>
+                      <div class="button-row">
+                        <button class="btn primary" @click="savePatch(patch)">保存并重新检查</button>
+                        <button class="btn" @click="cancelEditPatch">取消</button>
+                      </div>
+                    </div>
+
+                    <aside v-if="diagnosticsFor(patch)" class="patch-editor-reference">
+                      <div class="alert warning mismatch-hint">
+                        <strong>冲突定位：{{ diagnosticsFor(patch).hunk_header }}</strong>
+                        <div>{{ diagnosticsFor(patch).hint }}</div>
+                        <div v-if="mismatchFor(patch) && mismatchFor(patch).kind === 'indentation'" class="mono">
+                          补丁缩进 {{ mismatchFor(patch).patch_indent }} 个空格
+                          / 文件缩进 {{ mismatchFor(patch).file_indent }} 个空格
+                        </div>
+                      </div>
+                      <div class="mismatch-columns">
+                        <div class="mismatch-column">
+                          <h4>补丁上下文</h4>
+                          <div class="compare-list">
+                            <div
+                              v-for="(row, idx) in diagnosticsFor(patch).patch_rows"
+                              :key="'p-' + idx"
+                              :class="['compare-row', patchRowClass(patch, row, idx)]"
+                            >
+                              <span class="compare-ln">{{ row.old_line || '·' }}</span>
+                              <span class="compare-tag">{{ row.tag === ' ' ? '·' : row.tag }}</span>
+                              <span class="compare-text">{{ row.text || ' ' }}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="mismatch-column">
+                          <h4>当前文件</h4>
+                          <div class="compare-list">
+                            <div
+                              v-for="row in diagnosticsFor(patch).file_rows"
+                              :key="'f-' + row.line"
+                              :class="['compare-row', fileRowClass(patch, row)]"
+                            >
+                              <span class="compare-ln">{{ row.line }}</span>
+                              <span class="compare-tag"> </span>
+                              <span class="compare-text">{{ row.text || ' ' }}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </aside>
                   </div>
                 </div>
                 <diff-view v-else-if="openPatches[patch.id]" :content="patch.content" />

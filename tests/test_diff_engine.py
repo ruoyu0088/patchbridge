@@ -71,6 +71,28 @@ def test_context_conflict(project_root: Path):
     assert info.value.code == "patch_context_mismatch"
 
 
+def test_indentation_mismatch_has_diagnostic(project_root: Path):
+    text = """diff --git a/src/calculator.py b/src/calculator.py
+--- a/src/calculator.py
++++ b/src/calculator.py
+@@ -4,2 +4,2 @@
+ def divide(left, right):
+-    return left / right
++    return left / right + 1
+"""
+    patch = parse_one(text, project_root)
+    with pytest.raises(AppError) as info:
+        apply_file_patch(
+            patch,
+            b"def add(left, right):\n    return left + right\n\n  def divide(left, right):\n  return left / right\n",
+        )
+    diagnostic = info.value.details
+    assert diagnostic["first_mismatch"]["kind"] == "indentation"
+    assert diagnostic["first_mismatch"]["patch_indent"] == 0
+    assert diagnostic["first_mismatch"]["file_indent"] == 2
+    assert "缩进" in diagnostic["hint"]
+
+
 def test_offset_is_tolerated(project_root: Path):
     text = """diff --git a/src/calculator.py b/src/calculator.py
 --- a/src/calculator.py

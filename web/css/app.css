@@ -207,7 +207,145 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 .diff-meta { background: #f2f5fa; color: #65758b; }
 .diff-line.diff-hunk .diff-code, .diff-line.diff-meta .diff-code { padding-top: 3px; padding-bottom: 3px; }
 .patch-actions { display: flex; gap: 7px; padding: 9px 15px 12px; border-top: 1px solid #f0f3f8; }
+.conflict-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 15px 10px;
+  padding: 9px 11px;
+  border: 1px solid #f2c9c4;
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: #7a1a12;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .patch-edit { padding: 0 15px 15px; }
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  font-size: 13px;
+}
+.editor-toolbar .muted { margin-left: 8px; font-size: 12px; }
+.patch-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.patch-editor-layout.with-reference {
+  grid-template-columns: minmax(0, 1fr);
+}
+.patch-editor-main { min-width: 0; }
+.patch-editor-grid {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid #26344d;
+  border-radius: 9px;
+  overflow: hidden;
+  background: #0f172a;
+  margin-bottom: 10px;
+}
+.editor-gutter {
+  width: 47px;
+  flex: 0 0 47px;
+  height: 520px;
+  overflow: hidden;
+  margin: 0;
+  padding: 12px 8px;
+  background: #0b1220;
+  border-right: 1px solid #26344d;
+  color: #60708a;
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: right;
+  user-select: none;
+}
+.patch-code-editor {
+  flex: 1;
+  min-width: 0;
+  height: 520px;
+  min-height: 520px;
+  resize: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #0f172a;
+  color: #dbeafe;
+  caret-color: #93c5fd;
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.patch-editor-reference {
+  min-width: 0;
+  order: -1;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px;
+  background: #fbfcfe;
+}
+.mismatch-hint { margin: 0 0 9px; font-size: 12.5px; }
+.mismatch-hint .mono { margin-top: 5px; color: #734500; }
+.mismatch-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.mismatch-column { min-width: 0; }
+.mismatch-column h4 {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.compare-list {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+}
+.compare-row {
+  display: flex;
+  min-width: max-content;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+  color: #46546a;
+}
+.compare-row.compare-add { background: #eaf8f0; color: #145c39; }
+.compare-row.compare-del { background: #fdeeee; color: #8e2318; }
+.compare-row.compare-mismatch {
+  background: #fff0c2;
+  box-shadow: inset 3px 0 0 #d18a00;
+}
+.compare-ln {
+  width: 37px;
+  flex: 0 0 37px;
+  padding-right: 5px;
+  text-align: right;
+  color: #9aa6b8;
+  border-right: 1px solid #edf0f5;
+}
+.compare-tag {
+  width: 17px;
+  flex: 0 0 17px;
+  text-align: center;
+  color: #8b98aa;
+}
+.compare-text { padding-right: 8px; }
+@media (max-width: 700px) {
+  .mismatch-columns { grid-template-columns: 1fr; }
+  .conflict-summary { flex-direction: column; }
+}
 .answer-panel { display: flex; flex-direction: column; gap: 9px; }
 .answer-editor { width: 100%; min-height: 300px; border: 1px solid var(--line-strong); border-radius: 9px; padding: 12px; resize: vertical; line-height: 1.55; }
 .answer-replace { margin-bottom: 15px; }

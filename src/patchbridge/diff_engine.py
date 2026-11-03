@@ -408,6 +408,119 @@ def canonical_patch(patch: FilePatch) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _leading_indent(value: str) -> int:
+    return len(value) - len(value.lstrip(" \t"))
+
+
+def diagnose_hunk_mismatch(
+    hunk: Hunk,
+    hunk_index: int,
+    work: list[Line],
+    expected: int,
+) -> dict[str, Any]:
+    """Describe where a hunk stops matching the current file.
+
+    The editor uses this to show the expected patch lines next to the real file
+    lines.  It intentionally reports only the first mismatch: fixing indentation
+    or a stale context line is usually an iterative process, and a concise
+    pointer is more useful than a wall of red.
+    """
+    patch_rows: list[dict[str, Any]] = []
+    old_line = hunk.old_start
+    for line in hunk.lines:
+        row: dict[str, Any] = {
+            "tag": line.tag,
+            "text": line.content,
+            "no_newline": line.no_newline,
+        }
+        if line.tag in {" ", "-"}:
+            row["old_line"] = old_line
+            old_line += 1
+        else:
+            row["old_line"] = None
+        patch_rows.append(row)
+
+    old_rows = [
+        (index, row)
+        for index, row in enumerate(patch_rows)
+        if row["tag"] in {" ", "-"}
+    ]
+    window_start = max(0, expected - 3)
+    window_end = min(len(work), expected + max(12, len(old_rows) + 3))
+    if expected >= len(work) and work:
+        window_start = max(0, len(work) - 10)
+        window_end = len(work)
+    file_rows = [
+        {"line": index + 1, "text": work[index].content}
+        for index in range(window_start, window_end)
+    ]
+
+    first: dict[str, Any] | None = None
+    hint = ""
+    if expected >= len(work):
+        hint = f"补丁期望从第 {hunk.old_start} 行开始，但当前文件只有 {len(work)} 行。"
+    else:
+        for offset, (patch_index, row) in enumerate(old_rows):
+            file_index = expected + offset
+            if file_index >= len(work):
+                first = {
+                    "kind": "eof",
+                    "patch_row_index": patch_index,
+                    "patch_line": row.get("old_line"),
+                    "patch_text": row["text"],
+                    "file_line": None,
+                    "file_text": None,
+                }
+                hint = f"补丁上下文在第 {row.get('old_line')} 行之后超出了文件末尾。"
+                break
+            patch_text = row["text"]
+            file_text = work[file_index].content
+            if patch_text == file_text:
+                continue
+            patch_indent = _leading_indent(patch_text)
+            file_indent = _leading_indent(file_text)
+            kind = "indentation" if patch_text.strip() == file_text.strip() else "content"
+            first = {
+                "kind": kind,
+                "patch_row_index": patch_index,
+                "patch_line": row.get("old_line"),
+                "patch_text": patch_text,
+                "file_line": file_index + 1,
+                "file_text": file_text,
+                "patch_indent": patch_indent,
+                "file_indent": file_indent,
+            }
+            if kind == "indentation":
+                delta = file_indent - patch_indent
+                direction = "少" if delta > 0 else "多"
+                hint = (
+                    f"补丁上下文第 {row.get('old_line')} 行（当前文件第 {file_index + 1} 行）"
+                    f"的缩进不一致：补丁为 {patch_indent} 个前导空格，文件为 {file_indent} 个；"
+                    f"这一行在补丁中{direction}了 {abs(delta)} 个空格。"
+                )
+            else:
+                hint = (
+                    f"补丁上下文第 {row.get('old_line')} 行与当前文件第 {file_index + 1} 行内容不同。"
+                )
+            break
+    if first is None:
+        hint = "补丁上下文没有找到可对齐的位置。"
+
+    return {
+        "hunk_index": hunk_index,
+        "hunk_header": (
+            f"@@ -{hunk.old_start},{hunk.old_count} "
+            f"+{hunk.new_start},{hunk.new_count} @@"
+        ),
+        "old_start": hunk.old_start,
+        "expected_line": expected + 1,
+        "patch_rows": patch_rows,
+        "file_rows": file_rows,
+        "first_mismatch": first,
+        "hint": hint,
+    }
+
+
 def _find_sequence(haystack: list[str], needle: list[str], expected: int) -> tuple[int, bool]:
     if not needle:
         return max(0, min(expected, len(haystack))), False
@@ -470,7 +583,19 @@ def apply_file_patch(
         new_lines = hunk.new_lines
         expected = max(0, hunk.old_start - 1 + offset)
         old_seq = [line.content for line in old_lines]
-        index, shifted = _find_sequence([line.content for line in work], old_seq, expected)
+        try:
+            index, shifted = _find_sequence(
+                [line.content for line in work], old_seq, expected
+            )
+        except AppError as exc:
+            if exc.code != "patch_context_mismatch":
+                raise
+            diagnostic = diagnose_hunk_mismatch(hunk, hunk_index, work, expected)
+            raise AppError(
+                "patch_context_mismatch",
+                "补丁上下文与当前文件不匹配",
+                details=diagnostic,
+            ) from exc
         if shifted:
             warnings.append(
                 f"hunk 在文件中偏移到第 {index + 1} 行应用（原期望第 {expected + 1} 行）"

@@ -52,6 +52,7 @@ class Evaluation:
     after_sha256: str | None = None
     new_bytes: bytes | None = None
     file_patch: FilePatch | None = None
+    diagnostics: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +68,7 @@ class Evaluation:
             "warnings": list(self.warnings or []),
             "current_sha256": self.current_sha256,
             "after_sha256": self.after_sha256,
+            "diagnostics": self.diagnostics,
         }
 
 
@@ -201,6 +203,10 @@ def evaluate_patch(
     except AppError as exc:
         eval_result.apply_status = "conflict"
         eval_result.reason = exc.message
+        if exc.code == "patch_context_mismatch" and isinstance(exc.details, dict):
+            eval_result.diagnostics = exc.details
+            if exc.details.get("hint"):
+                eval_result.reason = f"{exc.message}：{exc.details['hint']}"
         return eval_result
     eval_result.new_bytes = result.data
     eval_result.after_sha256 = sha256_bytes(result.data)
