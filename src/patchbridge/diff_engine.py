@@ -408,6 +408,221 @@ def canonical_patch(patch: FilePatch) -> str:
     return "\n".join(lines) + "\n"
 
 
+@dataclass
+class AlignResult:
+    aligned: bool
+    content: str | None = None
+    changes: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    reason: str = ""
+
+
+def _leading_ws(value: str) -> str:
+    return value[: len(value) - len(value.lstrip(" \t"))]
+
+
+def _ws_delta(patch_ws: str, file_ws: str) -> tuple[str, int, str] | None:
+    """Return (add/remove, count, unit) or None when the difference is mixed.
+
+    The common case is a whole hunk that was pasted two spaces to the left.
+    We deliberately accept only a uniform run of spaces or tabs; mixed
+    tab/space indentation needs manual work.
+    """
+    if patch_ws == file_ws:
+        return ("", 0, "")
+    if file_ws.startswith(patch_ws):
+        extra = file_ws[len(patch_ws) :]
+        if extra and all(char == " " for char in extra):
+            return ("add", len(extra), " ")
+        if extra and all(char == "\t" for char in extra):
+            return ("add", len(extra), "\t")
+    if patch_ws.startswith(file_ws):
+        extra = patch_ws[len(file_ws) :]
+        if extra and all(char == " " for char in extra):
+            return ("remove", len(extra), " ")
+        if extra and all(char == "\t" for char in extra):
+            return ("remove", len(extra), "\t")
+    return None
+
+
+def _find_hunk_position(
+    work: list[Line],
+    hunk: Hunk,
+) -> tuple[int, bool] | None:
+    old_lines = hunk.old_lines
+    if not old_lines:
+        return None
+    needle = [line.content.lstrip(" \t") for line in old_lines]
+    hay = [line.content.lstrip(" \t") for line in work]
+
+    def matches_at(position: int) -> bool:
+        if position < 0 or position + len(needle) > len(hay):
+            return False
+        return hay[position : position + len(needle)] == needle
+
+    expected = max(0, hunk.old_start - 1)
+    if matches_at(expected):
+        return expected, False
+    positions = [
+        index
+        for index in range(0, len(hay) - len(needle) + 1)
+        if hay[index : index + len(needle)] == needle
+    ]
+    if not positions:
+        return None
+    if len(positions) > 1:
+        return None
+    return positions[0], True
+
+
+def align_patch_indentation(
+    patch: FilePatch,
+    current: bytes,
+    *,
+    align_added: bool = True,
+) -> AlignResult:
+    """Align pure indentation differences against the current file.
+
+    Existing/context lines are matched by content after their leading
+    whitespace.  A hunk is only changed when every old line requires the same
+    uniform whitespace delta and every added line can receive that delta.
+    The result is always re-dry-run; if it still fails, no content is returned.
+    """
+    if patch.unsupported:
+        return AlignResult(False, reason=patch.unsupported or "不支持的补丁")
+    if patch.new_file:
+        return AlignResult(False, reason="新增文件没有原文件可对齐")
+    try:
+        info = decode_text_file(current)
+    except Exception as exc:
+        return AlignResult(False, reason=f"当前文件不是可编辑文本：{exc}")
+    work = split_lines_keep_eol(info.text)
+    changes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    changed_any = False
+
+    for hunk_index, hunk in enumerate(patch.hunks):
+        old_lines = hunk.old_lines
+        if not old_lines:
+            warnings.append(f"第 {hunk_index + 1} 个 hunk 没有上下文，无法推断缩进")
+            continue
+        located = _find_hunk_position(work, hunk)
+        if located is None:
+            return AlignResult(
+                False,
+                warnings=warnings,
+                reason=(
+                    f"第 {hunk_index + 1} 个 hunk 无法在原文中唯一定位，"
+                    "可能存在内容差异或重复上下文"
+                ),
+            )
+        position, shifted = located
+        if shifted:
+            warnings.append(
+                f"第 {hunk_index + 1} 个 hunk 在原文中定位到第 {position + 1} 行"
+            )
+
+        delta: tuple[str, int, str] | None = None
+        aligned_old: list[tuple[DiffLine, str]] = []
+        for offset, line in enumerate(old_lines):
+            file_line = work[position + offset]
+            if not line.content.strip():
+                # Empty/whitespace-only lines carry no indentation signal.
+                aligned_old.append((line, file_line.content))
+                continue
+            patch_ws = _leading_ws(line.content)
+            file_ws = _leading_ws(file_line.content)
+            if line.content[len(patch_ws) :] != file_line.content[len(file_ws) :]:
+                return AlignResult(
+                    False,
+                    warnings=warnings,
+                    reason=(
+                        f"第 {hunk_index + 1} 个 hunk 的第 {line.content!r} "
+                        "并不只是缩进不同，无法自动对齐"
+                    ),
+                )
+            line_delta = _ws_delta(patch_ws, file_ws)
+            if line_delta is None:
+                return AlignResult(
+                    False,
+                    warnings=warnings,
+                    reason=(
+                        f"第 {hunk_index + 1} 个 hunk 混合使用了空格和 Tab，"
+                        "无法自动推断统一偏移"
+                    ),
+                )
+            if delta is None:
+                delta = line_delta
+            elif delta != line_delta:
+                return AlignResult(
+                    False,
+                    warnings=warnings,
+                    reason=(
+                        f"第 {hunk_index + 1} 个 hunk 内不同行需要不同的缩进偏移，"
+                        "无法用统一偏移修复"
+                    ),
+                )
+            aligned_old.append((line, file_line.content))
+
+        if delta is None or delta[0] == "":
+            continue
+        mode, count, unit = delta
+        added_lines = hunk.new_lines
+        if align_added:
+            for line in added_lines:
+                if line.tag != "+" or not line.content.strip():
+                    continue
+                if mode == "add":
+                    line.content = unit * count + line.content
+                else:
+                    prefix = unit * count
+                    if not line.content.startswith(prefix):
+                        return AlignResult(
+                            False,
+                            warnings=warnings,
+                            reason=(
+                                f"第 {hunk_index + 1} 个 hunk 的新增行缩进不足，"
+                                "无法整体左移"
+                            ),
+                        )
+                    line.content = line.content[len(prefix) :]
+        for line, file_content in aligned_old:
+            line.content = file_content
+        changed_any = True
+        changes.append(
+            {
+                "hunk_index": hunk_index,
+                "hunk_header": (
+                    f"@@ -{hunk.old_start},{hunk.old_count} "
+                    f"+{hunk.new_start},{hunk.new_count} @@"
+                ),
+                "mode": mode,
+                "count": count,
+                "unit": "tab" if unit == "\t" else "space",
+                "context_lines": len(old_lines),
+                "added_lines": len([line for line in hunk.new_lines if line.tag == "+"]),
+            }
+        )
+
+    if not changed_any:
+        return AlignResult(
+            False,
+            warnings=warnings,
+            reason="没有找到可自动对齐的纯缩进差异；补丁可能已经对齐，或包含内容差异",
+        )
+
+    content = canonical_patch(patch)
+    try:
+        apply_file_patch(patch, current, path=patch.path)
+    except AppError as exc:
+        return AlignResult(
+            False,
+            warnings=warnings,
+            reason=f"对齐后仍无法应用：{exc.message}",
+        )
+    return AlignResult(True, content=content, changes=changes, warnings=warnings)
+
+
 def _leading_indent(value: str) -> int:
     return len(value) - len(value.lstrip(" \t"))
 

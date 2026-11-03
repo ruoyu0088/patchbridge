@@ -533,6 +533,9 @@ const SessionPage = {
       editingCommit: false,
       editingPatchId: null,
       patchDraft: '',
+      alignUndo: null,
+      alignAdded: true,
+      aligningPatchId: null,
       bundleText: '',
       bundleLoading: false,
       disk: null,
@@ -623,6 +626,8 @@ const SessionPage = {
       this.confirmApply = null;
       this.editingPatchId = null;
       this.editingCommit = false;
+      this.alignUndo = null;
+      this.aligningPatchId = null;
       try {
         this.details = await api.get(`/api/sessions/${encodeURIComponent(this.sessionId)}`);
         this.answerText = this.details.answer || '';
@@ -825,6 +830,7 @@ const SessionPage = {
     startEditPatch(patch) {
       this.editingPatchId = patch.id;
       this.patchDraft = patch.content || '';
+      this.alignUndo = null;
       this.openPatches[patch.id] = true;
       this.$nextTick(() => {
         const ref = this.$refs.patchTextarea;
@@ -835,6 +841,46 @@ const SessionPage = {
     cancelEditPatch() {
       this.editingPatchId = null;
       this.patchDraft = '';
+      this.alignUndo = null;
+    },
+    async alignIndent(patch) {
+      if (this.aligningPatchId) return;
+      this.aligningPatchId = patch.id;
+      try {
+        const data = await api.post(
+          `/api/sessions/${this.sessionId}/patches/${patch.id}/align-indent`,
+          { align_added: this.alignAdded },
+        );
+        if (!data.aligned) {
+          notify(data.reason || '无法自动对齐缩进', 'error');
+          return;
+        }
+        const previous =
+          this.editingPatchId === patch.id ? this.patchDraft : (patch.content || '');
+        this.alignUndo = previous;
+        this.editingPatchId = patch.id;
+        this.patchDraft = data.content || '';
+        this.openPatches[patch.id] = true;
+        const summary = (data.changes || [])
+          .map(
+            (change) =>
+              `hunk ${change.hunk_index + 1}: ${change.mode === 'add' ? '+' : '-'}${change.count} ${
+                change.unit === 'tab' ? 'Tab' : '空格'
+              }`,
+          )
+          .join('；');
+        notify(summary ? `已对齐缩进（${summary}），请检查后保存` : '已对齐缩进，请检查后保存', 'success');
+      } catch (err) {
+        notify(err.message, 'error');
+      } finally {
+        this.aligningPatchId = null;
+      }
+    },
+    undoAlign() {
+      if (this.alignUndo === null) return;
+      this.patchDraft = this.alignUndo;
+      this.alignUndo = null;
+      notify('已撤销对齐，补丁文本已恢复', 'info');
     },
     syncEditorScroll(event) {
       const ref = this.$refs.patchGutter;
@@ -853,6 +899,7 @@ const SessionPage = {
     },
     resetPatchDraft(patch) {
       this.patchDraft = patch.content || '';
+      this.alignUndo = null;
     },
     async savePatch(patch) {
       try {
@@ -861,6 +908,7 @@ const SessionPage = {
         });
         this.editingPatchId = null;
         this.patchDraft = '';
+        this.alignUndo = null;
         notify('补丁已更新，正在重新检查', 'success');
         await this.load();
       } catch (err) {
@@ -1211,11 +1259,14 @@ const SessionPage = {
 
                 <div v-if="statusFor(patch) && statusFor(patch).reason" class="conflict-summary">
                   <div>{{ statusFor(patch).reason }}</div>
-                  <button
-                    v-if="!patchLocked && !isApplied(patch)"
-                    class="btn tiny"
-                    @click="startEditPatch(patch)"
-                  >打开补丁编辑器</button>
+                  <div v-if="!patchLocked && !isApplied(patch)" class="small-actions">
+                    <button
+                      class="btn tiny primary"
+                      :disabled="aligningPatchId === patch.id"
+                      @click="alignIndent(patch)"
+                    >{{ aligningPatchId === patch.id ? '对齐中…' : '一键对齐缩进' }}</button>
+                    <button class="btn tiny" @click="startEditPatch(patch)">打开补丁编辑器</button>
+                  </div>
                 </div>
 
                 <div v-if="editingPatchId === patch.id" class="patch-edit">
@@ -1224,7 +1275,17 @@ const SessionPage = {
                       <strong>补丁编辑器</strong>
                       <span class="muted">保存后会重新解析并 dry-run</span>
                     </div>
-                    <div class="small-actions">
+                    <div class="small-actions editor-tools">
+                      <label class="inline-check">
+                        <input type="checkbox" v-model="alignAdded" />
+                        <span>同时平移新增行</span>
+                      </label>
+                      <button
+                        class="btn tiny primary"
+                        :disabled="aligningPatchId === patch.id"
+                        @click="alignIndent(patch)"
+                      >{{ aligningPatchId === patch.id ? '对齐中…' : '一键对齐缩进' }}</button>
+                      <button v-if="alignUndo !== null" class="btn tiny" @click="undoAlign">撤销对齐</button>
                       <button class="btn tiny" @click="resetPatchDraft(patch)">恢复当前补丁</button>
                     </div>
                   </div>
@@ -1251,6 +1312,9 @@ const SessionPage = {
                     </div>
 
                     <aside v-if="diagnosticsFor(patch)" class="patch-editor-reference">
+                      <div v-if="alignUndo !== null" class="alert success small">
+                        已填入对齐后的补丁，但尚未保存。下面是保存前的冲突参考，便于核对。
+                      </div>
                       <div class="alert warning mismatch-hint">
                         <strong>冲突定位：{{ diagnosticsFor(patch).hunk_header }}</strong>
                         <div>{{ diagnosticsFor(patch).hint }}</div>

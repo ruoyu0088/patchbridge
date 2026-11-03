@@ -229,8 +229,19 @@ h3 { font-size: 15px; margin: 0 0 8px; }
   gap: 12px;
   margin-bottom: 9px;
   font-size: 13px;
+  flex-wrap: wrap;
 }
 .editor-toolbar .muted { margin-left: 8px; font-size: 12px; }
+.editor-tools { flex-wrap: wrap; justify-content: flex-end; }
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.inline-check input { width: auto; }
 .patch-editor-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

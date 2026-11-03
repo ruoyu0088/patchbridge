@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from patchbridge.diff_engine import apply_file_patch, canonical_patch, parse_unified_diff
+from patchbridge.diff_engine import (
+    align_patch_indentation,
+    apply_file_patch,
+    canonical_patch,
+    parse_unified_diff,
+)
 from patchbridge.errors import AppError
 
 
@@ -116,6 +121,81 @@ def test_canonical_patch_is_stable(project_root: Path):
     assert canonical.endswith("\n")
     reparsed = parse_one(canonical, project_root)
     assert reparsed.path == patch.path
+
+
+def test_align_indentation_shifts_context_and_added_lines(project_root: Path):
+    current = (
+        b"  function foo() {\n"
+        b"    const value = 1;\n"
+        b"    return value;\n"
+        b"  }\n"
+    )
+    text = """diff --git a/src/foo.js b/src/foo.js
+--- a/src/foo.js
++++ b/src/foo.js
+@@ -2,2 +2,2 @@
+   const value = 1;
+-  return value;
++  return value + 1;
+"""
+    patch = parse_one(text, project_root, known=("src/foo.js",))
+    result = align_patch_indentation(patch, current)
+    assert result.aligned is True, result.reason
+    assert result.changes[0]["count"] == 2
+    aligned_patch = parse_one(result.content, project_root, known=("src/foo.js",))
+    applied = apply_file_patch(aligned_patch, current)
+    assert "    return value + 1;" in applied.text
+
+
+def test_align_indentation_ignores_blank_context_lines(project_root: Path):
+    current = b"  function foo() {\n\n    return 1;\n  }\n"
+    text = """diff --git a/src/foo.js b/src/foo.js
+--- a/src/foo.js
++++ b/src/foo.js
+@@ -1,3 +1,3 @@
+ function foo() {
+ 
+-  return 1;
++  return 2;
+"""
+    patch = parse_one(text, project_root, known=("src/foo.js",))
+    result = align_patch_indentation(patch, current)
+    assert result.aligned is True, result.reason
+    assert result.changes[0]["count"] == 2
+
+
+def test_align_indentation_can_leave_added_lines(project_root: Path):
+    current = b"  function foo() {\n    const value = 1;\n  }\n"
+    text = """diff --git a/src/foo.js b/src/foo.js
+--- a/src/foo.js
++++ b/src/foo.js
+@@ -2,1 +2,2 @@
+   const value = 1;
++  return value;
+"""
+    patch = parse_one(text, project_root, known=("src/foo.js",))
+    result = align_patch_indentation(patch, current, align_added=False)
+    assert result.aligned is True, result.reason
+    aligned_patch = parse_one(result.content, project_root, known=("src/foo.js",))
+    applied = apply_file_patch(aligned_patch, current)
+    assert "  return value;" in applied.text
+    assert "    return value;" not in applied.text
+
+
+def test_align_indentation_refuses_content_difference(project_root: Path):
+    current = b"  function foo() {\n    const value = 1;\n    return value;\n  }\n"
+    text = """diff --git a/src/foo.js b/src/foo.js
+--- a/src/foo.js
++++ b/src/foo.js
+@@ -2,2 +2,2 @@
+   const value = 1;
+-  return other;
++  return other + 1;
+"""
+    patch = parse_one(text, project_root, known=("src/foo.js",))
+    result = align_patch_indentation(patch, current)
+    assert result.aligned is False
+    assert "无法" in result.reason
 
 
 def test_canonical_preserves_no_newline_marker(project_root: Path):

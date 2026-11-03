@@ -10,7 +10,13 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .applying import apply_session, dry_run, recover_incomplete, revert_session
+from .applying import (
+    align_session_patch,
+    apply_session,
+    dry_run,
+    recover_incomplete,
+    revert_session,
+)
 from .archive import cleanup_tmp
 from .config import AppConfig
 from .errors import AppError
@@ -55,6 +61,10 @@ class CommitBody(BaseModel):
 
 class PatchBody(BaseModel):
     content: str
+
+
+class AlignIndentBody(BaseModel):
+    align_added: bool = True
 
 
 class DryRunBody(BaseModel):
@@ -327,6 +337,22 @@ def create_api(config: AppConfig) -> FastAPI:
     @app.put("/api/sessions/{session_id}/patches/{patch_id}")
     def put_patch(session_id: str, patch_id: str, body: PatchBody) -> dict[str, Any]:
         return ok({"patch": store.update_patch(session_id, patch_id, body.content)})
+
+    @app.post("/api/sessions/{session_id}/patches/{patch_id}/align-indent")
+    def align_indent(
+        session_id: str,
+        patch_id: str,
+        body: AlignIndentBody | None = None,
+    ) -> dict[str, Any]:
+        align_added = True if body is None else body.align_added
+        return ok(
+            align_session_patch(
+                store,
+                session_id,
+                patch_id,
+                align_added=align_added,
+            )
+        )
 
     @app.post("/api/sessions/{session_id}/dry-run")
     def post_dry_run(session_id: str, body: DryRunBody) -> dict[str, Any]:

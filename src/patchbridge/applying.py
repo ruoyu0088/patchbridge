@@ -10,7 +10,9 @@ from typing import Any
 
 from .config import AppConfig
 from .diff_engine import (
+    AlignResult,
     FilePatch,
+    align_patch_indentation,
     apply_file_patch,
     canonical_patch,
     parse_unified_diff,
@@ -257,6 +259,57 @@ def dry_run(
             },
         )
     return summary
+
+
+def align_session_patch(
+    store: SessionStore,
+    session_id: str,
+    patch_id: str,
+    *,
+    align_added: bool = True,
+) -> dict[str, Any]:
+    """Return an indentation-aligned patch without saving it.
+
+    The caller can inspect the proposed content, edit it further, and only then
+    use the normal update_patch endpoint.  This keeps a one-click operation from
+    silently changing a session.
+    """
+    if store.has_any_apply(session_id):
+        raise AppError("session_locked", "会话已应用补丁，不能再编辑补丁；请重新载入", status=409)
+    entry = store.get_patch(session_id, patch_id)
+    meta = store.meta(session_id)
+    root = Path(meta.get("root") or "")
+    selection = store.read_json(session_id, "selection.json") or {}
+    known = [item.get("path") for item in selection.get("files", []) if item.get("path")]
+    parsed = parse_unified_diff(
+        entry.get("content") or "",
+        root=root,
+        known_paths=known,
+    )
+    if len(parsed) != 1:
+        raise AppError(
+            "patch_invalid",
+            "一个补丁条目只能包含一个文件，无法自动对齐",
+            status=422,
+            details={"patch_id": patch_id, "files": len(parsed)},
+        )
+    file_patch = parsed[0]
+    target = safe_target(root, file_patch.path)
+    if not target.is_file():
+        raise AppError("file_missing", f"目标文件不存在：{file_patch.path}", status=409)
+    result: AlignResult = align_patch_indentation(
+        file_patch,
+        target.read_bytes(),
+        align_added=align_added,
+    )
+    return {
+        "aligned": result.aligned,
+        "content": result.content,
+        "changes": result.changes,
+        "warnings": result.warnings,
+        "reason": result.reason,
+        "align_added": align_added,
+    }
 
 
 def _backup_rel(apply_id: str) -> str:

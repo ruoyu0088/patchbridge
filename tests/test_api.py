@@ -100,6 +100,52 @@ def test_full_api_flow(tmp_path: Path):
     assert missing.json()["error"]["code"] == "session_not_found"
 
 
+def test_align_indent_endpoint_returns_preview(tmp_path: Path):
+    client, project = _client(tmp_path)
+    (project / "src" / "foo.js").write_text(
+        "  function foo() {\n"
+        "    const value = 1;\n"
+        "    return value;\n"
+        "  }\n",
+        encoding="utf-8",
+    )
+    profile = f"name: Demo\nroot: {project}\nmode: exclude\n\n[rules]\n"
+    project_id = client.post("/api/projects", json={"raw": profile}).json()["data"]["project"]["id"]
+    packed = client.post(
+        f"/api/projects/{project_id}/pack",
+        json={"requirement": "add one", "files": ["src/foo.js"]},
+    ).json()["data"]
+    session_id = packed["session_id"]
+    answer = """## 文件补丁
+```diff
+diff --git a/src/foo.js b/src/foo.js
+--- a/src/foo.js
++++ b/src/foo.js
+@@ -2,2 +2,2 @@
+   const value = 1;
+-  return value;
++  return value + 1;
+```
+"""
+    client.post(f"/api/sessions/{session_id}/answer", json={"answer": answer})
+    aligned = client.post(
+        f"/api/sessions/{session_id}/patches/p0001/align-indent",
+        json={"align_added": True},
+    )
+    assert aligned.status_code == 200
+    data = aligned.json()["data"]
+    assert data["aligned"] is True
+    assert data["content"]
+    assert data["changes"][0]["count"] == 2
+    client.put(
+        f"/api/sessions/{session_id}/patches/p0001",
+        json={"content": data["content"]},
+    )
+    dry = client.post(f"/api/sessions/{session_id}/dry-run", json={"patch_ids": ["p0001"]})
+    assert dry.status_code == 200
+    assert dry.json()["data"]["ok"] is True
+
+
 def test_pack_marker_conflict_returns_structured_error(tmp_path: Path):
     client, project = _client(tmp_path)
     (project / "src" / "bad.py").write_text(
