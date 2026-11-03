@@ -178,6 +178,15 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 .meta-row { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
 .session-header { align-items: flex-start; }
 .prose { line-height: 1.7; font-size: 13.5px; color: #334155; }
+.prompt-text {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+.prompt-panel .panel-head { margin-bottom: 10px; }
 .commit-box { background: #f6f8fc; border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; font-size: 13px; }
 .commit-editor { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; padding: 9px 11px; font-family: "Cascadia Code", Consolas, monospace; }
 .patch-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 7px 2px; flex-wrap: wrap; }
@@ -212,6 +221,14 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 .session-row:hover { border-color: #b8c9e8; background: #fbfdff; }
 .session-title-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .session-title-line h3 { margin: 0; font-size: 14px; }
+.session-prompt {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .session-main .meta-row { margin-top: 6px; }
 .session-stats { display: flex; gap: 11px; align-items: center; color: var(--muted); font-size: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; background: #fff; border: 1px solid var(--line); padding: 11px; border-radius: 10px; }

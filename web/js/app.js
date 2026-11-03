@@ -584,6 +584,9 @@ const SessionPage = {
     warnings() {
       return (this.parsed && this.parsed.warnings) || [];
     },
+    requirement() {
+      return (this.details && this.details.requirement) || '';
+    },
     bundlePath() {
       return (this.details && this.details.bundle_path) || '';
     },
@@ -879,6 +882,13 @@ const SessionPage = {
       const text = (this.parsed && this.parsed.commit_message) || '';
       if (text) await copyText(text, 'commit 建议');
     },
+    async copyPrompt() {
+      if (!this.requirement) {
+        notify('该会话没有记录用户 Prompt', 'error');
+        return;
+      }
+      await copyText(this.requirement, '用户 Prompt');
+    },
     async loadDisk() {
       this.diskLoading = true;
       try {
@@ -1006,8 +1016,9 @@ const SessionPage = {
         <div class="page-header session-header">
           <div>
             <button class="btn link" @click="back">← 返回</button>
-            <h1>{{ meta.title }}</h1>
+            <h1>会话审阅</h1>
             <div class="meta-row">
+              <span>{{ meta.project_name }}</span>
               <span class="mono">{{ sessionId }}</span>
               <span class="badge" :class="'status-' + status">{{ statusText(status) }}</span>
               <span v-if="archived" class="badge muted">已归档</span>
@@ -1037,6 +1048,14 @@ const SessionPage = {
 
         <section v-if="tab === 'review'" class="review-layout">
           <div class="review-main">
+            <div class="panel prompt-panel">
+              <div class="panel-head">
+                <h2>用户 Prompt</h2>
+                <button class="btn tiny" @click="copyPrompt">复制 Prompt</button>
+              </div>
+              <pre class="prose prompt-text">{{ requirement || '（该会话没有记录用户 Prompt）' }}</pre>
+            </div>
+
             <div v-if="!parsed" class="panel answer-panel">
               <h2>粘贴 AI 的完整回答</h2>
               <p class="muted">
@@ -1387,7 +1406,7 @@ const HistoryPage = {
         <article v-for="session in sessions" :key="session.id" class="session-row" @click="open(session)">
           <div class="session-main">
             <div class="session-title-line">
-              <h3>{{ session.title }}</h3>
+              <span class="session-prompt">{{ session.title }}</span>
               <span class="badge" :class="'status-' + session.status">{{ statusText(session.status) }}</span>
               <span v-if="session.archived" class="badge muted">zip</span>
             </div>
