@@ -82,6 +82,8 @@ def test_scanner_skips_git_binary_large(tmp_path: Path):
     assert result.skipped["binary"] == 1
     assert result.skipped["large"] == 1
     assert result.skipped["ignored"] >= 1
+    assert result.binary_files == ["src/b.bin"]
+    assert result.as_dict()["skipped_files"]["binary"] == ["src/b.bin"]
 
 
 def test_utf8_boundary_is_not_binary(tmp_path: Path):

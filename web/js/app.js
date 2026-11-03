@@ -259,6 +259,8 @@ const ProjectPage = {
       project: null,
       files: [],
       summary: null,
+      binaryFiles: [],
+      binaryTruncated: false,
       loading: true,
       error: '',
       query: '',
@@ -293,6 +295,12 @@ const ProjectPage = {
     accessible() {
       return Boolean(this.project && this.project.root_status && this.project.root_status.accessible);
     },
+    binaryCount() {
+      return (
+        (this.summary && this.summary.skipped && this.summary.skipped.binary) ||
+        this.binaryFiles.length
+      );
+    },
   },
   mounted() {
     this.load();
@@ -311,6 +319,8 @@ const ProjectPage = {
       this.packResult = null;
       this.files = [];
       this.summary = null;
+      this.binaryFiles = [];
+      this.binaryTruncated = false;
       this.query = '';
       this.requirement = '';
       this.bundleText = '';
@@ -325,6 +335,10 @@ const ProjectPage = {
         const treeData = await api.get(`/api/projects/${encodeURIComponent(this.projectId)}/tree`);
         this.files = treeData.files || [];
         this.summary = treeData.summary || null;
+        this.binaryFiles = (treeData.skipped_files && treeData.skipped_files.binary) || [];
+        this.binaryTruncated = Boolean(
+          treeData.skipped_files && treeData.skipped_files.binary_truncated,
+        );
       } catch (err) {
         this.error = err.message;
       } finally {
@@ -335,6 +349,14 @@ const ProjectPage = {
       for (const path of node.leaves || []) {
         this.selected[path] = checked;
       }
+    },
+    fullPath(rel) {
+      const root = (this.project && this.project.root) || '';
+      const separator = root.includes('\\') ? '\\' : '/';
+      return root.replace(/[\\/]+$/, '') + separator + rel.split('/').join(separator);
+    },
+    async copyFilePath(rel) {
+      await copyText(this.fullPath(rel), '文件绝对路径');
     },
     dirState(node) {
       if (!node.leaves || !node.leaves.length) return 'none';
@@ -510,6 +532,34 @@ const ProjectPage = {
           </div>
         </section>
       </div>
+
+      <section v-if="binaryFiles.length" class="panel skipped-panel">
+        <details open>
+          <summary>
+            <strong>已自动排除的二进制文件</strong>
+            <span class="badge warning">{{ binaryCount }}</span>
+            <span class="muted">点击路径可复制绝对路径；这些文件不会出现在文件树中。</span>
+          </summary>
+          <p class="hint">
+            如果其中某个文件其实是文本，请检查文件编码或内容；PatchBridge 只把无法可靠识别为文本的文件归为二进制。
+          </p>
+          <div class="binary-list">
+            <button
+              v-for="path in binaryFiles"
+              :key="path"
+              class="binary-row"
+              :title="fullPath(path)"
+              @click="copyFilePath(path)"
+            >
+              <code>{{ path }}</code>
+              <span>复制绝对路径</span>
+            </button>
+          </div>
+          <p v-if="binaryTruncated" class="hint">
+            二进制文件超过显示上限，这里只列出前 {{ binaryFiles.length }} 个，共 {{ binaryCount }} 个。
+          </p>
+        </details>
+      </section>
     </div>
   `,
 };

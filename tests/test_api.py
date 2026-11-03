@@ -163,6 +163,18 @@ def test_pack_marker_conflict_returns_structured_error(tmp_path: Path):
     assert "src/bad.py" in error["details"]["conflicts"]
 
 
+def test_tree_lists_binary_file_paths(tmp_path: Path):
+    client, project = _client(tmp_path)
+    (project / "src" / "blob.bin").write_bytes(b"\x00\x01\x02")
+    profile = f"name: Demo\nroot: {project}\nmode: exclude\n\n[rules]\n"
+    project_id = client.post("/api/projects", json={"raw": profile}).json()["data"]["project"]["id"]
+    tree = client.get(f"/api/projects/{project_id}/tree")
+    assert tree.status_code == 200
+    data = tree.json()["data"]
+    assert data["skipped_files"]["binary"] == ["src/blob.bin"]
+    assert data["summary"]["skipped"]["binary"] == 1
+
+
 def test_unavailable_project_blocks_tree_and_pack(tmp_path: Path):
     client, _ = _client(tmp_path)
     missing = tmp_path / "does-not-exist"

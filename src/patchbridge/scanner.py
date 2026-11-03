@@ -10,6 +10,7 @@ from .fsutil import is_relative_to, looks_binary
 from .profiles import Profile
 
 _VCS_DIRS = {".git", ".hg", ".svn"}
+MAX_BINARY_DETAILS = 1000
 
 
 @dataclass
@@ -30,6 +31,8 @@ class ScanResult:
         "error": 0,
     })
     errors: list[dict[str, str]] = field(default_factory=list)
+    binary_files: list[str] = field(default_factory=list)
+    binary_truncated: bool = False
     root: str = ""
 
     @property
@@ -46,6 +49,10 @@ class ScanResult:
                 "count": len(self.files),
                 "bytes": self.total_bytes,
                 "skipped": self.skipped,
+            },
+            "skipped_files": {
+                "binary": self.binary_files,
+                "binary_truncated": self.binary_truncated,
             },
             "errors": self.errors[:50],
         }
@@ -127,6 +134,10 @@ def scan_project(
                         sample = fh.read(min(stat.st_size, 1024 * 1024))
                     if looks_binary(sample, truncated=stat.st_size > len(sample)):
                         result.skipped["binary"] += 1
+                        if len(result.binary_files) < MAX_BINARY_DETAILS:
+                            result.binary_files.append(rel)
+                        else:
+                            result.binary_truncated = True
                         continue
                 else:
                     sample = b""
