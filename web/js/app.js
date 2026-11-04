@@ -310,9 +310,18 @@ const ProjectPage = {
       this.load();
     },
   },
+  created() {
+    this.selectionSaveTimer = null;
+    this.selectionSaveChain = Promise.resolve();
+    this.pendingSelectionProjectId = null;
+  },
+  beforeUnmount() {
+    this.flushSelectionSave();
+  },
   methods: {
     formatBytes,
     async load() {
+      this.flushSelectionSave();
       this.loading = true;
       this.error = '';
       this.selected = {};
@@ -332,13 +341,19 @@ const ProjectPage = {
           this.loading = false;
           return;
         }
-        const treeData = await api.get(`/api/projects/${encodeURIComponent(this.projectId)}/tree`);
+        const [treeData, selectionData] = await Promise.all([
+          api.get(`/api/projects/${encodeURIComponent(this.projectId)}/tree`),
+          api
+            .get(`/api/projects/${encodeURIComponent(this.projectId)}/selection`)
+            .catch(() => ({ files: [] })),
+        ]);
         this.files = treeData.files || [];
         this.summary = treeData.summary || null;
         this.binaryFiles = (treeData.skipped_files && treeData.skipped_files.binary) || [];
         this.binaryTruncated = Boolean(
           treeData.skipped_files && treeData.skipped_files.binary_truncated,
         );
+        this.selected = this.selectedFromSaved(selectionData.files);
       } catch (err) {
         this.error = err.message;
       } finally {
@@ -349,6 +364,7 @@ const ProjectPage = {
       for (const path of node.leaves || []) {
         this.selected[path] = checked;
       }
+      this.scheduleSelectionSave();
     },
     fullPath(rel) {
       const root = (this.project && this.project.root) || '';
@@ -367,9 +383,50 @@ const ProjectPage = {
     },
     selectAll() {
       for (const file of this.filteredFiles) this.selected[file.path] = true;
+      this.scheduleSelectionSave();
     },
     clearAll() {
       this.selected = {};
+      this.scheduleSelectionSave();
+    },
+    selectedFromSaved(savedPaths) {
+      const available = new Set(this.files.map((file) => file.path));
+      const result = {};
+      for (const path of savedPaths || []) {
+        if (available.has(path)) result[path] = true;
+      }
+      return result;
+    },
+    scheduleSelectionSave() {
+      this.pendingSelectionProjectId = this.projectId;
+      if (this.selectionSaveTimer) clearTimeout(this.selectionSaveTimer);
+      this.selectionSaveTimer = setTimeout(() => {
+        this.selectionSaveTimer = null;
+        this.persistSelection();
+      }, 400);
+    },
+    cancelScheduledSelectionSave() {
+      if (this.selectionSaveTimer) {
+        clearTimeout(this.selectionSaveTimer);
+        this.selectionSaveTimer = null;
+      }
+    },
+    flushSelectionSave() {
+      if (!this.selectionSaveTimer) return;
+      this.cancelScheduledSelectionSave();
+      this.persistSelection();
+    },
+    persistSelection() {
+      const projectId = this.pendingSelectionProjectId || this.projectId;
+      this.pendingSelectionProjectId = null;
+      if (!projectId || !this.project || !this.accessible) return;
+      const files = [...this.selectedPaths];
+      this.selectionSaveChain = this.selectionSaveChain
+        .catch(() => {})
+        .then(() => api.put(`/api/projects/${encodeURIComponent(projectId)}/selection`, { files }))
+        .catch((err) => {
+          notify(`保存文件选择失败：${err.message}`, 'error');
+        });
     },
     async pack() {
       if (!this.accessible) return;

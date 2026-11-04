@@ -41,6 +41,10 @@ class AppConfig:
         return self.data_dir / "backups"
 
     @property
+    def selections_dir(self) -> Path:
+        return self.data_dir / "selections"
+
+    @property
     def tmp_dir(self) -> Path:
         return self.data_dir / "tmp"
 
@@ -66,6 +70,7 @@ class AppConfig:
             self.sessions_dir,
             self.profiles_dir,
             self.backups_dir,
+            self.selections_dir,
             self.tmp_dir,
             self.logs_dir,
         ):

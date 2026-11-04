@@ -26,8 +26,11 @@ from .packing import build_bundle
 from .profiles import (
     create_profile,
     delete_profile,
+    delete_selection,
     list_profiles,
     load_profile,
+    load_selection,
+    save_selection,
     update_profile,
 )
 from .scanner import scan_project
@@ -43,6 +46,10 @@ class ProjectBody(BaseModel):
     mode: str = "exclude"
     rules: list[str] | str = Field(default_factory=list)
     raw: str | None = None
+
+
+class SelectionBody(BaseModel):
+    files: list[str] = Field(default_factory=list)
 
 
 class PackBody(BaseModel):
@@ -212,6 +219,7 @@ def create_api(config: AppConfig) -> FastAPI:
     @app.delete("/api/projects/{project_id}")
     def remove_project(project_id: str) -> dict[str, Any]:
         delete_profile(config.profiles_dir, project_id)
+        delete_selection(config.selections_dir, project_id)
         return ok({"deleted": project_id})
 
     @app.get("/api/projects/{project_id}/tree")
@@ -226,6 +234,16 @@ def create_api(config: AppConfig) -> FastAPI:
             data["files"] = files
             data["summary"]["filtered_count"] = len(files)
         return ok({"project": profile.to_dict(), **data})
+
+    @app.get("/api/projects/{project_id}/selection")
+    def get_selection(project_id: str) -> dict[str, Any]:
+        load_profile(config.profiles_dir, project_id)
+        return ok({"files": load_selection(config.selections_dir, project_id)})
+
+    @app.put("/api/projects/{project_id}/selection")
+    def put_selection(project_id: str, body: SelectionBody) -> dict[str, Any]:
+        load_profile(config.profiles_dir, project_id)
+        return ok({"files": save_selection(config.selections_dir, project_id, body.files)})
 
     @app.post("/api/projects/{project_id}/pack")
     def pack(project_id: str, body: PackBody) -> dict[str, Any]:

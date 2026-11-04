@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -263,6 +265,69 @@ def profile_file_for(profiles_dir: Path, profile_id: str) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,80}", profile_id):
         raise AppError("invalid_profile_id", "profile ID 不合法")
     return profiles_dir / f"{profile_id}.profile"
+
+
+def selection_file_for(selections_dir: Path, profile_id: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,80}", profile_id):
+        raise AppError("invalid_profile_id", "profile ID 不合法")
+    return selections_dir / f"{profile_id}.json"
+
+
+def load_selection(selections_dir: Path, profile_id: str) -> list[str]:
+    """Return the file-tree selection that was saved for a project."""
+    path = selection_file_for(selections_dir, profile_id)
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    files = raw.get("files")
+    if not isinstance(files, list):
+        return []
+    result: list[str] = []
+    for item in files:
+        if not isinstance(item, str):
+            continue
+        try:
+            result.append(normalize_rel_path(item))
+        except AppError:
+            continue
+    return list(dict.fromkeys(result))
+
+
+def save_selection(selections_dir: Path, profile_id: str, files: Iterable[str]) -> list[str]:
+    """Persist the file-tree selection for a project, dropping unsafe paths."""
+    path = selection_file_for(selections_dir, profile_id)
+    ensure_dir(selections_dir)
+    cleaned: list[str] = []
+    for item in files or []:
+        if not isinstance(item, str):
+            continue
+        try:
+            cleaned.append(normalize_rel_path(item))
+        except AppError:
+            continue
+    cleaned = list(dict.fromkeys(cleaned))
+    atomic_write_json(
+        path,
+        {
+            "version": 1,
+            "project_id": profile_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "files": cleaned,
+        },
+    )
+    return cleaned
+
+
+def delete_selection(selections_dir: Path, profile_id: str) -> None:
+    try:
+        selection_file_for(selections_dir, profile_id).unlink(missing_ok=True)
+    except (AppError, OSError):
+        pass
 
 
 def list_profiles(profiles_dir: Path) -> list[dict[str, Any]]:
