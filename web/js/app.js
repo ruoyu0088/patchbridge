@@ -157,6 +157,9 @@ dist/
         this.editor = null;
         notify('profile 已保存', 'success');
         await this.load();
+        if (this.$root && typeof this.$root.loadSidebar === 'function') {
+          this.$root.loadSidebar();
+        }
       } catch (err) {
         this.editor.error = err.message;
       } finally {
@@ -175,6 +178,9 @@ dist/
         await api.delete(`/api/projects/${encodeURIComponent(project.id)}`);
         notify('工程已删除', 'success');
         await this.load();
+        if (this.$root && typeof this.$root.loadSidebar === 'function') {
+          this.$root.loadSidebar();
+        }
       } catch (err) {
         notify(err.message, 'error');
       }
@@ -1845,19 +1851,55 @@ const App = {
       route: { name: 'projects', id: '' },
       ui,
       answerText: '',
+      sidebar: {
+        projects: [],
+        sessions: [],
+        loading: true,
+      },
+      projectsExpanded: true,
+      historyExpanded: true,
     };
   },
   computed: {
     sessionId() {
       return this.route.id;
     },
+    recentProjects() {
+      const projects = [...this.sidebar.projects];
+      const lastSeen = new Map();
+      for (const session of this.sidebar.sessions) {
+        const projectId = session.project_id;
+        if (!projectId) continue;
+        const stamp = session.updated_at || session.created_at || '';
+        const prev = lastSeen.get(projectId) || '';
+        if (stamp > prev) lastSeen.set(projectId, stamp);
+      }
+      projects.sort((a, b) => {
+        const ta = lastSeen.get(a.id) || '';
+        const tb = lastSeen.get(b.id) || '';
+        if (ta !== tb) return tb.localeCompare(ta);
+        return a.name.localeCompare(b.name);
+      });
+      return projects.slice(0, 8);
+    },
+    recentSessions() {
+      return this.sidebar.sessions.slice(0, 8);
+    },
   },
   mounted() {
     window.addEventListener('hashchange', this.updateRoute);
-    this.updateRoute();
+    try {
+      const projects = localStorage.getItem('patchbridge.sidebar.projectsExpanded');
+      if (projects !== null) this.projectsExpanded = projects === '1';
+      const history = localStorage.getItem('patchbridge.sidebar.historyExpanded');
+      if (history !== null) this.historyExpanded = history === '1';
+    } catch (err) {
+      /* localStorage 不可用时使用默认展开状态 */
+    }
+    this.updateRoute(true);
   },
   methods: {
-    updateRoute() {
+    updateRoute(initial = false) {
       const hash = location.hash.replace(/^#/, '') || '/projects';
       const parts = hash.split('/').filter(Boolean);
       const name = parts[0] || 'projects';
@@ -1866,6 +1908,59 @@ const App = {
         id: parts[1] ? decodeURIComponent(parts[1]) : '',
       };
       this.answerText = '';
+      if (initial) {
+        if (name === 'project') this.projectsExpanded = true;
+        if (name === 'session') this.historyExpanded = true;
+      }
+      this.loadSidebar();
+    },
+    async loadSidebar() {
+      try {
+        const [projectsData, sessionsData] = await Promise.all([
+          api.get('/api/projects'),
+          api.get('/api/sessions'),
+        ]);
+        this.sidebar.projects = projectsData.projects || [];
+        this.sidebar.sessions = sessionsData.sessions || [];
+      } catch (err) {
+        /* 侧边栏加载失败不应阻断主流程 */
+      } finally {
+        this.sidebar.loading = false;
+      }
+    },
+    toggleProjects() {
+      this.projectsExpanded = !this.projectsExpanded;
+      try {
+        localStorage.setItem(
+          'patchbridge.sidebar.projectsExpanded',
+          this.projectsExpanded ? '1' : '0',
+        );
+      } catch (err) {
+        /* ignore */
+      }
+    },
+    toggleHistory() {
+      this.historyExpanded = !this.historyExpanded;
+      try {
+        localStorage.setItem(
+          'patchbridge.sidebar.historyExpanded',
+          this.historyExpanded ? '1' : '0',
+        );
+      } catch (err) {
+        /* ignore */
+      }
+    },
+    isProjectActive(id) {
+      return this.route.name === 'project' && this.route.id === id;
+    },
+    isSessionActive(id) {
+      return this.route.name === 'session' && this.route.id === id;
+    },
+    isProjectsSectionActive() {
+      return this.route.name === 'projects' || this.route.name === 'project';
+    },
+    isHistorySectionActive() {
+      return this.route.name === 'history' || this.route.name === 'session';
     },
     go(path) {
       location.hash = path;
@@ -1885,8 +1980,56 @@ const App = {
           </div>
         </div>
         <nav>
-          <a data-short="工程" href="#/projects" :class="['nav-item', route.name === 'projects' || route.name === 'project' ? 'active' : '']">工程</a>
-          <a data-short="历史" href="#/history" :class="['nav-item', route.name === 'history' || route.name === 'session' ? 'active' : '']">历史会话</a>
+          <div class="nav-mobile">
+            <a data-short="工程" href="#/projects" :class="['nav-item', isProjectsSectionActive() ? 'active' : '']">工程</a>
+            <a data-short="历史" href="#/history" :class="['nav-item', isHistorySectionActive() ? 'active' : '']">历史会话</a>
+          </div>
+          <div :class="['nav-group', isProjectsSectionActive() ? 'active' : '']">
+            <div class="nav-group-header">
+              <button
+                class="caret"
+                type="button"
+                :aria-expanded="projectsExpanded ? 'true' : 'false'"
+                @click="toggleProjects"
+              >{{ projectsExpanded ? '▾' : '▸' }}</button>
+              <span class="nav-group-title" @click="toggleProjects">工程</span>
+              <a class="open-link" href="#/projects" title="打开工程列表页面">↗</a>
+            </div>
+            <div v-if="projectsExpanded" class="nav-group-children">
+              <div v-if="sidebar.loading" class="nav-group-empty">加载中…</div>
+              <div v-else-if="!recentProjects.length" class="nav-group-empty">暂无工程</div>
+              <a
+                v-for="project in recentProjects"
+                :key="project.id"
+                :href="'#/project/' + encodeURIComponent(project.id)"
+                :class="['nav-subitem', isProjectActive(project.id) ? 'active' : '']"
+                :title="project.name"
+              >{{ project.name }}</a>
+            </div>
+          </div>
+          <div :class="['nav-group', isHistorySectionActive() ? 'active' : '']">
+            <div class="nav-group-header">
+              <button
+                class="caret"
+                type="button"
+                :aria-expanded="historyExpanded ? 'true' : 'false'"
+                @click="toggleHistory"
+              >{{ historyExpanded ? '▾' : '▸' }}</button>
+              <span class="nav-group-title" @click="toggleHistory">历史会话</span>
+              <a class="open-link" href="#/history" title="打开历史会话页面">↗</a>
+            </div>
+            <div v-if="historyExpanded" class="nav-group-children">
+              <div v-if="sidebar.loading" class="nav-group-empty">加载中…</div>
+              <div v-else-if="!recentSessions.length" class="nav-group-empty">暂无会话</div>
+              <a
+                v-for="session in recentSessions"
+                :key="session.id"
+                :href="'#/session/' + encodeURIComponent(session.id)"
+                :class="['nav-subitem', isSessionActive(session.id) ? 'active' : '']"
+                :title="session.title"
+              >{{ session.title }}</a>
+            </div>
+          </div>
           <a data-short="设置" href="#/settings" :class="['nav-item', route.name === 'settings' ? 'active' : '']">设置</a>
         </nav>
         <div class="sidebar-foot">
