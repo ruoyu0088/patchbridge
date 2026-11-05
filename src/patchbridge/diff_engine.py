@@ -392,6 +392,10 @@ def canonical_patch(patch: FilePatch) -> str:
     else:
         lines.append(f"--- a/{path}")
         lines.append(f"+++ b/{path}")
+    if patch.new_file and not patch.hunks:
+        # An empty new file still needs one hunk header so that git apply
+        # (and our own parser) accepts the patch.
+        lines.append("@@ -0,0 +0,0 @@")
     for hunk in patch.hunks:
         old_count = len(hunk.old_lines)
         new_count = len(hunk.new_lines)

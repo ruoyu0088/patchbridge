@@ -294,6 +294,12 @@ def align_session_patch(
             details={"patch_id": patch_id, "files": len(parsed)},
         )
     file_patch = parsed[0]
+    if file_patch.new_file:
+        raise AppError(
+            "align_new_file",
+            f"新增文件没有原文件可对齐：{file_patch.path}",
+            status=409,
+        )
     target = safe_target(root, file_patch.path)
     if not target.is_file():
         raise AppError("file_missing", f"目标文件不存在：{file_patch.path}", status=409)
