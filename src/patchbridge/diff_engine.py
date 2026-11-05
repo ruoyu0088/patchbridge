@@ -904,6 +904,71 @@ def find_file_patch(
     return None
 
 
+def merge_file_patches(
+    patches: list[FilePatch],
+) -> tuple[FilePatch, list[str]]:
+    """Merge multiple FilePatch objects that all target the same file.
+
+    The result keeps every hunk from the inputs, sorted by old_start, and
+    rejects patches whose old-line ranges overlap: two diffs that both touch
+    the same region of the original file cannot be combined without manual
+    editing.
+    """
+    if not patches:
+        raise AppError("merge_empty", "没有可合并的补丁")
+    paths = {normalize_rel_path(item.path) for item in patches if item.path}
+    if len(paths) != 1:
+        raise AppError(
+            "merge_path_mismatch",
+            "只能合并指向同一文件的补丁",
+            details={"paths": sorted(paths)},
+        )
+    merged = FilePatch(raw="", path=paths.pop())
+    warnings: list[str] = []
+    for item in patches:
+        if item.unsupported:
+            raise AppError(
+                "merge_unsupported",
+                f"补丁不支持合并：{item.unsupported}",
+                details={"path": item.path},
+            )
+        if item.deleted:
+            raise AppError("merge_deleted", "不支持合并删除文件补丁")
+        if item.new_file:
+            raise AppError(
+                "merge_new_file",
+                "不支持合并新增文件补丁",
+                details={"path": item.path},
+            )
+        merged.hunks.extend(item.hunks)
+        warnings.extend(item.warnings)
+    merged.hunks.sort(key=lambda h: (h.old_start, h.new_start))
+    for prev, cur in zip(merged.hunks, merged.hunks[1:]):
+        prev_end = prev.old_start + max(1, prev.old_count) - 1
+        if cur.old_start <= prev_end:
+            raise AppError(
+                "merge_overlap",
+                (
+                    f"补丁修改区域重叠：第 {prev.old_start} 行与第 {cur.old_start} 行附近，"
+                    "无法自动合并，请手动整理"
+                ),
+                details={
+                    "previous_hunk": {
+                        "old_start": prev.old_start,
+                        "old_count": prev.old_count,
+                    },
+                    "current_hunk": {
+                        "old_start": cur.old_start,
+                        "old_count": cur.old_count,
+                    },
+                },
+            )
+    merged.added = sum(h.added for h in merged.hunks)
+    merged.removed = sum(h.removed for h in merged.hunks)
+    merged.warnings = list(dict.fromkeys(warnings))
+    return merged, merged.warnings
+
+
 def paths_overlap(a: str, b: str) -> bool:
     pa = PurePosixPath(normalize_rel_path(a))
     pb = PurePosixPath(normalize_rel_path(b))

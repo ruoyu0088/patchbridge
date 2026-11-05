@@ -16,7 +16,13 @@ from .archive import (
     safe_extract,
 )
 from .config import AppConfig
-from .diff_engine import canonical_patch, parse_unified_diff
+from .diff_engine import (
+    FilePatch,
+    apply_file_patch,
+    canonical_patch,
+    merge_file_patches,
+    parse_unified_diff,
+)
 from .errors import AppError
 from .fsutil import (
     atomic_write_json,
@@ -576,6 +582,125 @@ class SessionStore:
         entry = dict(entry)
         entry["content"] = self.get_patch(session_id, patch_id)["content"]
         return entry
+
+    def merge_patches(self, session_id: str, patch_ids: list[str]) -> dict[str, Any]:
+        if self.has_any_apply(session_id):
+            raise AppError("session_locked", "会话已应用补丁，不能再合并；请重新载入", status=409)
+        ordered_ids = list(dict.fromkeys(patch_ids or []))
+        if len(ordered_ids) < 2:
+            raise AppError("merge_invalid", "至少需要两个不同的补丁才能合并", status=422)
+        meta = self.meta(session_id)
+        root = Path(meta.get("root") or "")
+        selection = self.read_json(session_id, "selection.json") or {}
+        known = [item.get("path") for item in selection.get("files", []) if item.get("path")]
+        entries = self.get_patches(session_id)
+        entry_map = {entry["id"]: entry for entry in entries}
+        ordered: list[dict[str, Any]] = []
+        for pid in ordered_ids:
+            entry = entry_map.get(pid)
+            if entry is None:
+                raise AppError("patch_not_found", f"补丁不存在：{pid}", status=404)
+            ordered.append(entry)
+        file_patches: list[FilePatch] = []
+        for entry in ordered:
+            parsed = parse_unified_diff(
+                entry.get("content") or "",
+                root=root,
+                known_paths=known,
+            )
+            if len(parsed) != 1:
+                raise AppError(
+                    "merge_invalid",
+                    f"补丁无法解析为单文件补丁：{entry['id']}",
+                    details={"patch_id": entry["id"]},
+                )
+            file_patches.append(parsed[0])
+        paths = {fp.path for fp in file_patches if fp.path}
+        if len(paths) != 1:
+            raise AppError(
+                "merge_path_mismatch",
+                "只能合并指向同一文件的补丁",
+                details={"paths": sorted(paths)},
+            )
+        target_path = paths.pop()
+        merged, warnings = merge_file_patches(file_patches)
+        merged_content = canonical_patch(merged)
+        target = safe_target(root, target_path)
+        if not target.exists():
+            raise AppError(
+                "file_missing",
+                f"目标文件不存在，无法验证合并结果：{target_path}",
+                status=409,
+            )
+        try:
+            apply_file_patch(merged, target.read_bytes(), path=target_path)
+        except AppError as exc:
+            hint = ""
+            if isinstance(exc.details, dict):
+                hint = str(exc.details.get("hint") or "")
+            raise AppError(
+                "merge_conflict",
+                f"合并后的补丁无法应用：{exc.message}",
+                status=409,
+                details={"path": target_path, "reason": exc.message, "hint": hint},
+            ) from exc
+        keeper = ordered[0]["id"]
+        remove_ids = {entry["id"] for entry in ordered[1:]}
+        directory = self.ensure_dir(session_id)
+        manifest_path = directory / "patches" / "manifest.json"
+        manifest = self.read_json(session_id, "patches/manifest.json", {"version": 1, "patches": []})
+        new_entries: list[dict[str, Any]] = []
+        for item in manifest.get("patches", []):
+            if item.get("id") in remove_ids:
+                filename = item.get("file")
+                if filename:
+                    (directory / "patches" / filename).unlink(missing_ok=True)
+                continue
+            if item.get("id") == keeper:
+                filename = item.get("file") or f"{keeper}.diff"
+                atomic_write_text(directory / "patches" / filename, merged_content)
+                new_entries.append(
+                    {
+                        **item,
+                        "path": target_path,
+                        "sha256": sha256_bytes(merged_content.encode("utf-8")),
+                        "added": merged.added,
+                        "removed": merged.removed,
+                        "new_file": False,
+                        "p_level": merged.p_level,
+                        "warnings": list(warnings),
+                        "unsupported": None,
+                        "merged_from": [entry["id"] for entry in ordered],
+                    }
+                )
+            else:
+                new_entries.append(item)
+        manifest = {"version": 1, "patches": new_entries}
+        atomic_write_json(manifest_path, manifest)
+        parsed = self.get_parsed(session_id) or {}
+        if "patches" in parsed:
+            parsed["patches"] = new_entries
+            self.write_json(session_id, "parsed.json", parsed)
+        self.append_event(
+            session_id,
+            "merge",
+            {
+                "path": target_path,
+                "merged_patch_ids": [entry["id"] for entry in ordered],
+                "keeper": keeper,
+                "warnings": list(warnings),
+            },
+        )
+        return {
+            "path": target_path,
+            "keeper": keeper,
+            "merged_patch_ids": [entry["id"] for entry in ordered],
+            "content": merged_content,
+            "added": merged.added,
+            "removed": merged.removed,
+            "warnings": list(warnings),
+            "applies": True,
+        }
 
     # --------------------------------------------------------------- archive
     def archive(self, session_id: str) -> dict[str, Any]:

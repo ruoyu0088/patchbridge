@@ -70,6 +70,10 @@ class PatchBody(BaseModel):
     content: str
 
 
+class MergePatchesBody(BaseModel):
+    patch_ids: list[str]
+
+
 class AlignIndentBody(BaseModel):
     align_added: bool = True
 
@@ -355,6 +359,10 @@ def create_api(config: AppConfig) -> FastAPI:
     @app.put("/api/sessions/{session_id}/patches/{patch_id}")
     def put_patch(session_id: str, patch_id: str, body: PatchBody) -> dict[str, Any]:
         return ok({"patch": store.update_patch(session_id, patch_id, body.content)})
+
+    @app.post("/api/sessions/{session_id}/patches/merge")
+    def merge_patches(session_id: str, body: MergePatchesBody) -> dict[str, Any]:
+        return ok(store.merge_patches(session_id, body.patch_ids))
 
     @app.post("/api/sessions/{session_id}/patches/{patch_id}/align-indent")
     def align_indent(

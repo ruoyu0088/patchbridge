@@ -658,6 +658,7 @@ const SessionPage = {
       hashConfirmChecked: {},
       applyResult: null,
       reverting: false,
+      merging: false,
     };
   },
   computed: {
@@ -712,6 +713,20 @@ const SessionPage = {
     editorGutterText() {
       const count = this.patchDraft ? this.patchDraft.split('\n').length : 1;
       return Array.from({ length: count }, (_, index) => index + 1).join('\n');
+    },
+    duplicateGroups() {
+      const pending = this.patches.filter((patch) => !this.appliedPatchIds.has(patch.id));
+      const map = new Map();
+      for (const patch of pending) {
+        const key = patch.path;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(patch);
+      }
+      const groups = [];
+      for (const [path, list] of map) {
+        if (list.length > 1) groups.push({ path, patches: list });
+      }
+      return groups;
     },
   },
   mounted() {
@@ -833,6 +848,52 @@ const SessionPage = {
     },
     isApplied(patch) {
       return this.appliedPatchIds.has(patch.id);
+    },
+    async mergeDuplicates() {
+      const groups = this.duplicateGroups || [];
+      if (!groups.length) return;
+      const yes = await confirmDialog({
+        title: '合并同文件补丁',
+        message: `将把 ${groups.length} 个文件的多条 diff 合并成一条，并用合并结果替换原有补丁。\n如果多条 diff 修改了原文件的同一区域，会保留原样并提示。\n\n确认开始合并吗？`,
+        confirmText: '开始合并',
+      });
+      if (!yes) return;
+      this.merging = true;
+      const results = [];
+      try {
+        for (const group of groups) {
+          const ids = group.patches.map((patch) => patch.id);
+          try {
+            const data = await api.post(
+              `/api/sessions/${this.sessionId}/patches/merge`,
+              { patch_ids: ids },
+            );
+            results.push({ path: group.path, ok: true, added: data.added, removed: data.removed });
+          } catch (err) {
+            results.push({ path: group.path, ok: false, message: err.message });
+          }
+        }
+      } finally {
+        this.merging = false;
+      }
+      const okCount = results.filter((item) => item.ok).length;
+      const failures = results.filter((item) => !item.ok);
+      if (!failures.length) {
+        notify(`已合并 ${okCount} 组同文件 diff`, 'success');
+      } else if (okCount === 0) {
+        notify(
+          `全部 ${failures.length} 组未合并：${failures.map((item) => item.path).join('、')}`,
+          'error',
+        );
+      } else {
+        notify(
+          `已合并 ${okCount} 组，${failures.length} 组未合并：${failures
+            .map((item) => `${item.path}（${item.message}）`)
+            .join('；')}`,
+          'info',
+        );
+      }
+      await this.load();
     },
     async applySelected() {
       if (!this.selectedIds.length) {
@@ -1323,6 +1384,12 @@ const SessionPage = {
                   <span class="muted">已选 {{ selectedIds.length }} / {{ patches.length }}</span>
                 </div>
                 <div class="button-row">
+                  <button
+                    v-if="duplicateGroups.length && !patchLocked"
+                    class="btn accent"
+                    :disabled="merging"
+                    @click="mergeDuplicates"
+                  >{{ merging ? '合并中…' : '合并同文件 diff（' + duplicateGroups.length + ' 组）' }}</button>                
                   <button class="btn" @click="dryAll">全部 dry-run</button>
                   <button class="btn primary" :disabled="busy || !selectedIds.length" @click="applySelected">
                     应用选中补丁
