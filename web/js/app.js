@@ -639,6 +639,36 @@ const ProjectPage = {
         </section>
 
         <section class="panel compose-panel">
+          <div
+            v-if="profileEditor"
+            class="inline-profile-editor"
+            style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line);"
+          >
+            <div class="panel-head">
+              <h2>编辑工程定义</h2>
+              <div class="small-actions">
+                <button class="btn tiny" @click="profileEditor = null">关闭</button>
+              </div>
+            </div>
+            <p class="muted small">
+              纯文本 profile：root 必须是绝对路径；mode 为 exclude 或 include；
+              [rules] 使用 gitignore 语法，支持 ! 取反。保存后文件树会立即刷新。
+            </p>
+            <textarea
+              v-model="profileEditor.raw"
+              class="code-editor profile-editor"
+              spellcheck="false"
+            ></textarea>
+            <div v-if="profileEditor.error" class="alert error small">{{ profileEditor.error }}</div>
+            <div class="button-row" style="margin-top: 10px;">
+              <button
+                class="btn primary"
+                :disabled="profileEditor.saving"
+                @click="saveProfileEditor"
+              >{{ profileEditor.saving ? '保存中…' : '保存并刷新文件树' }}</button>
+              <button class="btn" @click="profileEditor = null">取消</button>
+            </div>
+          </div>
           <div class="panel-head"><h2>需求与打包</h2></div>
           <label class="field-label">修改需求</label>
           <textarea
@@ -725,33 +755,6 @@ const ProjectPage = {
           </p>
         </details>
       </section>
-
-      <div v-if="profileEditor" class="modal-backdrop" @click.self="profileEditor = null">
-        <div class="modal wide">
-          <div class="modal-head">
-            <h2>编辑工程定义</h2>
-            <button class="icon-btn" @click="profileEditor = null">×</button>
-          </div>
-          <p class="muted">
-            纯文本 profile：root 必须是绝对路径；mode 为 exclude 或 include；
-            [rules] 使用 gitignore 语法，支持 ! 取反。保存后文件树会立即刷新。
-          </p>
-          <textarea
-            v-model="profileEditor.raw"
-            class="code-editor profile-editor"
-            spellcheck="false"
-          ></textarea>
-          <div v-if="profileEditor.error" class="alert error">{{ profileEditor.error }}</div>
-          <div class="modal-actions">
-            <button class="btn" @click="profileEditor = null">取消</button>
-            <button
-              class="btn primary"
-              :disabled="profileEditor.saving"
-              @click="saveProfileEditor"
-            >{{ profileEditor.saving ? '保存中…' : '保存并刷新文件树' }}</button>
-          </div>
-        </div>
-      </div>
     </div>
   `,
 };
