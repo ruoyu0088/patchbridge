@@ -4,6 +4,11 @@ export const ui = reactive({
   toast: null,
   confirm: null,
   busy: false,
+  auto: {
+    running: false,
+    sessionId: null,
+    message: '',
+  },
 });
 
 let toastTimer = null;

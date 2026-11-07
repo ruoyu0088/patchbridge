@@ -466,6 +466,39 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 .event-json { background: #f7f9fc; border: 1px solid var(--line); border-radius: 7px; padding: 9px; margin-top: 8px; font-size: 11.5px; max-height: 260px; overflow: auto; }
 
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 200; padding: 11px 16px; border-radius: 9px; background: #172033; color: #fff; font-size: 13px; box-shadow: 0 10px 40px rgba(0,0,0,0.22); max-width: min(520px, 90vw); }
+.auto-banner {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  background: #1f2937;
+  color: #fff;
+  padding: 11px 20px;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  max-width: min(760px, 92vw);
+  pointer-events: none;
+}
+.auto-banner-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: auto-spin 0.9s linear infinite;
+}
+@keyframes auto-spin {
+  to { transform: rotate(360deg); }
+}
+.auto-banner-text { font-weight: 600; }
+.auto-banner-detail { color: #cbd5e1; font-size: 12px; }
+.auto-deepseek-row { align-items: center; }
 .toast-success { background: #0f6b42; }
 .toast-error { background: #9f251b; }
 .toast-info { background: #1f3e78; }

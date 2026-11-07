@@ -262,6 +262,7 @@ const ProjectPage = {
   props: { projectId: { type: String, required: true } },
   data() {
     return {
+      ui,
       project: null,
       files: [],
       summary: null,
@@ -277,6 +278,7 @@ const ProjectPage = {
       bundleText: '',
       bundlePreviewOpen: false,
       bundleLoading: false,
+      autoSending: false,
     };
   },
   computed: {
@@ -459,6 +461,27 @@ const ProjectPage = {
         this.packing = false;
       }
     },
+    async autoDeepseek() {
+      if (!this.packResult) return;
+      if (this.ui.auto.running) {
+        notify('已有自动输入任务在运行', 'error');
+        return;
+      }
+      this.autoSending = true;
+      try {
+        await api.post(
+          `/api/sessions/${encodeURIComponent(this.packResult.session_id)}/auto-deepseek`,
+        );
+        this.ui.auto.running = true;
+        this.ui.auto.sessionId = this.packResult.session_id;
+        this.ui.auto.message = '正在启动自动化…';
+        notify('已启动自动输入，请不要操作键盘和鼠标', 'info');
+      } catch (err) {
+        notify(err.message, 'error');
+      } finally {
+        this.autoSending = false;
+      }
+    },
     async copyBundleText() {
       try {
         const text = this.bundleText || (await api.text(`/api/sessions/${this.packResult.session_id}/bundle`));
@@ -584,6 +607,18 @@ const ProjectPage = {
                 {{ bundlePreviewOpen ? '收起预览' : '预览文本' }}
               </button>
               <button class="btn accent" @click="openSession">打开审阅页 →</button>
+            </div>
+            <div class="button-row auto-deepseek-row">
+              <button
+                class="btn primary"
+                :disabled="autoSending || ui.auto.running"
+                @click="autoDeepseek"
+              >
+                {{ autoSending ? '启动中…' : '自动输入到 DeepSeek' }}
+              </button>
+              <span class="muted small">
+                将自动粘贴需求并把 bundle.txt 作为附件上传，不会自动提交；完成后请人工确认后手动发送。
+              </span>
             </div>
             <div v-if="bundlePreviewOpen" class="bundle-preview">
               <div v-if="bundleLoading" class="muted">读取中…</div>
@@ -1925,6 +1960,7 @@ const App = {
       },
       projectsExpanded: true,
       historyExpanded: true,
+      autoPollTimer: null,
     };
   },
   computed: {
@@ -1964,8 +2000,40 @@ const App = {
       /* localStorage 不可用时使用默认展开状态 */
     }
     this.updateRoute(true);
+    this.pollAutoState();
+    this.autoPollTimer = setInterval(() => this.pollAutoState(), 1500);
+  },
+  beforeUnmount() {
+    if (this.autoPollTimer) {
+      clearInterval(this.autoPollTimer);
+      this.autoPollTimer = null;
+    }
   },
   methods: {
+    async pollAutoState() {
+      try {
+        const data = await api.get('/api/auto-deepseek/status');
+        const wasRunning = Boolean(ui.auto.running);
+        ui.auto.running = Boolean(data.running);
+        ui.auto.sessionId = data.session_id || null;
+        ui.auto.message = data.message || '';
+        if (
+          wasRunning &&
+          !ui.auto.running &&
+          data.success !== null &&
+          data.success !== undefined
+        ) {
+          notify(
+            data.success
+              ? 'DeepSeek 自动输入完成，请人工确认后手动提交'
+              : `自动输入失败：${data.message || ''}`,
+            data.success ? 'success' : 'error',
+          );
+        }
+      } catch (err) {
+        /* 自动化状态查询失败时静默忽略 */
+      }
+    },
     updateRoute(initial = false) {
       const hash = location.hash.replace(/^#/, '') || '/projects';
       const parts = hash.split('/').filter(Boolean);
@@ -2112,6 +2180,12 @@ const App = {
         <settings-page v-else-if="route.name === 'settings'" />
         <div v-else class="empty">页面不存在。 <a href="#/projects">返回工程</a></div>
       </main>
+
+      <div v-if="ui.auto.running" class="auto-banner">
+        <span class="auto-banner-spinner"></span>
+        <span class="auto-banner-text">正在自动输入 DeepSeek，请不要操作键盘和鼠标…</span>
+        <span v-if="ui.auto.message" class="auto-banner-detail">{{ ui.auto.message }}</span>
+      </div>
 
       <div v-if="ui.toast" :class="['toast', 'toast-' + ui.toast.type]">{{ ui.toast.message }}</div>
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
@@ -34,7 +36,7 @@ from .profiles import (
     update_profile,
 )
 from .scanner import scan_project
-from .sessions import SessionStore
+from .sessions import SessionStore, utc_now
 
 logger = logging.getLogger("patchbridge.api")
 
@@ -112,6 +114,15 @@ def ok(data: Any = None) -> dict[str, Any]:
 
 def create_api(config: AppConfig) -> FastAPI:
     store = SessionStore(config)
+    auto_lock = threading.Lock()
+    auto_state: dict[str, Any] = {
+        "running": False,
+        "session_id": None,
+        "started_at": None,
+        "finished_at": None,
+        "success": None,
+        "message": "",
+    }
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -477,6 +488,94 @@ def create_api(config: AppConfig) -> FastAPI:
     @app.get("/api/sessions/{session_id}/disk-diff")
     def get_disk_diff(session_id: str) -> dict[str, Any]:
         return ok(disk_diff(store, session_id))
+
+    # --------------------------------------------------------- auto deepseek
+    @app.post("/api/sessions/{session_id}/auto-deepseek")
+    def post_auto_deepseek(session_id: str) -> dict[str, Any]:
+        store.details(session_id)
+        try:
+            from .auto import send_to_deepseek  # type: ignore
+        except ImportError as exc:
+            raise AppError(
+                "auto_unavailable",
+                f"当前环境缺少自动化依赖：{exc}",
+                status=503,
+            ) from exc
+
+        with auto_lock:
+            if auto_state["running"]:
+                raise AppError(
+                    "auto_running",
+                    "已有自动输入任务在运行，请等待完成",
+                    status=409,
+                    details={"session_id": auto_state.get("session_id")},
+                )
+            auto_state.update(
+                {
+                    "running": True,
+                    "session_id": session_id,
+                    "started_at": utc_now(),
+                    "finished_at": None,
+                    "success": None,
+                    "message": "正在启动自动化…",
+                }
+            )
+
+        try:
+            directory = store.ensure_dir(session_id)
+            bundle_path = str(directory / "bundle.txt")
+            if not Path(bundle_path).is_file():
+                raise AppError(
+                    "bundle_missing",
+                    "找不到打包文本文件，请重新生成打包",
+                    status=409,
+                )
+            requirement = store.read_text(session_id, "requirement.md")
+            if not requirement.strip():
+                raise AppError(
+                    "requirement_empty",
+                    "该会话没有记录用户需求，无法自动输入",
+                    status=409,
+                )
+        except Exception:
+            with auto_lock:
+                auto_state.update(
+                    {
+                        "running": False,
+                        "finished_at": utc_now(),
+                        "success": False,
+                        "message": "读取会话打包信息失败",
+                    }
+                )
+            raise
+
+        def run() -> None:
+            try:
+                ok = send_to_deepseek(bundle_path, requirement)
+                with auto_lock:
+                    auto_state["success"] = bool(ok)
+                    auto_state["message"] = (
+                        "已完成自动输入，请人工确认后手动提交"
+                        if ok
+                        else "自动化失败，请检查 DeepSeek 页面是否已打开"
+                    )
+            except Exception as exc:
+                logger.exception("auto-deepseek failed")
+                with auto_lock:
+                    auto_state["success"] = False
+                    auto_state["message"] = f"自动化异常：{exc}"
+            finally:
+                with auto_lock:
+                    auto_state["running"] = False
+                    auto_state["finished_at"] = utc_now()
+
+        threading.Thread(target=run, daemon=True, name="auto-deepseek").start()
+        return ok({"started": True, "session_id": session_id})
+
+    @app.get("/api/auto-deepseek/status")
+    def get_auto_deepseek_status() -> dict[str, Any]:
+        with auto_lock:
+            return ok(dict(auto_state))
 
     # ------------------------------------------------------------------ index
     @app.get("/api/index/status")
