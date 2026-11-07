@@ -279,6 +279,7 @@ const ProjectPage = {
       bundlePreviewOpen: false,
       bundleLoading: false,
       autoSending: false,
+      profileEditor: null,
     };
   },
   computed: {
@@ -482,6 +483,71 @@ const ProjectPage = {
         this.autoSending = false;
       }
     },
+    openProfileEditor() {
+      const raw = (this.project && this.project.raw) || '';
+      this.profileEditor = { raw, error: '', saving: false };
+    },
+    async refreshAfterProfileSave() {
+      try {
+        const projectData = await api.get(
+          `/api/projects/${encodeURIComponent(this.projectId)}`,
+        );
+        this.project = projectData.project;
+        if (!this.project.root_status.accessible) {
+          this.files = [];
+          this.summary = null;
+          this.binaryFiles = [];
+          this.binaryTruncated = false;
+          this.error = this.project.root_status.error || '根目录不可访问';
+          return;
+        }
+        const treeData = await api.get(
+          `/api/projects/${encodeURIComponent(this.projectId)}/tree`,
+        );
+        this.files = treeData.files || [];
+        this.summary = treeData.summary || null;
+        this.binaryFiles =
+          (treeData.skipped_files && treeData.skipped_files.binary) || [];
+        this.binaryTruncated = Boolean(
+          treeData.skipped_files && treeData.skipped_files.binary_truncated,
+        );
+        const available = new Set(this.files.map((file) => file.path));
+        const nextSelected = {};
+        for (const path of Object.keys(this.selected)) {
+          if (available.has(path) && this.selected[path]) {
+            nextSelected[path] = true;
+          }
+        }
+        this.selected = nextSelected;
+        this.error = '';
+      } catch (err) {
+        this.error = err.message;
+      }
+    },
+    async saveProfileEditor() {
+      if (!this.profileEditor) return;
+      this.profileEditor.saving = true;
+      this.profileEditor.error = '';
+      try {
+        await api.put(`/api/projects/${encodeURIComponent(this.projectId)}`, {
+          raw: this.profileEditor.raw,
+        });
+        notify('工程定义已保存，文件树已刷新', 'success');
+        this.profileEditor = null;
+        await this.refreshAfterProfileSave();
+        if (this.$root && typeof this.$root.loadSidebar === 'function') {
+          this.$root.loadSidebar();
+        }
+      } catch (err) {
+        if (this.profileEditor) {
+          this.profileEditor.error = err.message;
+        }
+      } finally {
+        if (this.profileEditor) {
+          this.profileEditor.saving = false;
+        }
+      }
+    },
     async copyBundleText() {
       try {
         const text = this.bundleText || (await api.text(`/api/sessions/${this.packResult.session_id}/bundle`));
@@ -551,6 +617,7 @@ const ProjectPage = {
           <div class="panel-head">
             <h2>文件树</h2>
             <div class="small-actions">
+              <button class="btn tiny" @click="openProfileEditor">编辑工程定义</button>
               <button class="btn tiny" @click="selectAll">全选当前</button>
               <button class="btn tiny" @click="clearAll">清空</button>
             </div>
@@ -658,6 +725,33 @@ const ProjectPage = {
           </p>
         </details>
       </section>
+
+      <div v-if="profileEditor" class="modal-backdrop" @click.self="profileEditor = null">
+        <div class="modal wide">
+          <div class="modal-head">
+            <h2>编辑工程定义</h2>
+            <button class="icon-btn" @click="profileEditor = null">×</button>
+          </div>
+          <p class="muted">
+            纯文本 profile：root 必须是绝对路径；mode 为 exclude 或 include；
+            [rules] 使用 gitignore 语法，支持 ! 取反。保存后文件树会立即刷新。
+          </p>
+          <textarea
+            v-model="profileEditor.raw"
+            class="code-editor profile-editor"
+            spellcheck="false"
+          ></textarea>
+          <div v-if="profileEditor.error" class="alert error">{{ profileEditor.error }}</div>
+          <div class="modal-actions">
+            <button class="btn" @click="profileEditor = null">取消</button>
+            <button
+              class="btn primary"
+              :disabled="profileEditor.saving"
+              @click="saveProfileEditor"
+            >{{ profileEditor.saving ? '保存中…' : '保存并刷新文件树' }}</button>
+          </div>
+        </div>
+      </div>
     </div>
   `,
 };
