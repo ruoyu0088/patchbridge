@@ -184,7 +184,7 @@ def _find_deepseek_tab():
                     title = tab.window_text()
                 except Exception:
                     continue
-                if title and "- DeepSeek" in title:
+                if title and ("- DeepSeek" in title or "DeepSeek -" in title):
                     return b_name, win, idx, title
     return None
 
