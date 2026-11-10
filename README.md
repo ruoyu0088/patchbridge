@@ -29,6 +29,8 @@ PYTHONPATH=src python -m patchbridge --open
 - FastAPI、Uvicorn、pathspec、charset-normalizer
 - pytest、httpx（仅测试）
 - Git 2.x（应用补丁时要求工程是 git 仓库）
+- 可选：[mpatch](https://github.com/Romelium/mpatch) 1.8+（严格引擎失败后的模糊应用；
+  默认查找 PATH 与 `C:\portable_apps\bin\mpatch.exe`，也可在设置中指定）
 - 不需要 Node.js 运行时；Vue 3 运行时已内置在 `web/vendor/`
 
 依赖已加入本机的 `C:\pixi_env`。换机器时：
@@ -47,9 +49,12 @@ pip install -e ".[test]"
 4. **交给 AI**：使用内置提示词要求 AI 按“修改说明 / Commit 建议 / 文件补丁”回答。
 5. **解析**：把 AI 输出的全部内容粘贴回工具；工具自动寻找 unified diff。
 6. **审阅**：逐文件查看 diff、状态、dry-run；可编辑补丁和 commit。冲突时可在编辑器中左右对照补丁上下文与当前文件，定位缩进/内容差异；纯缩进冲突可一键对齐。
-7. **应用**：勾选文件，部分应用；应用前自动备份。
-8. **撤回**：严格 LIFO，按备份恢复修改过的文件，删除新增文件。
-9. **历史**：纯文本会话、索引、归档、导出、重新载入。
+7. **模糊回退**：严格引擎失败时自动对齐纯缩进，再在**临时副本**中调用 mpatch；成功后展示由副本
+   `git diff` 生成的最终补丁，应用前仍由严格引擎校验。仍失败则生成一段“AI 修正请求”
+   （小文件附全文，大文件附失败位置附近 ±30 行），复制回 Web AI 重新生成。
+8. **应用**：勾选文件，部分应用；应用前自动备份。
+9. **撤回**：严格 LIFO，按备份恢复修改过的文件，删除新增文件。
+10. **历史**：纯文本会话、索引、归档、导出、重新载入。
 
 更详细的步骤见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)。
 
@@ -70,6 +75,7 @@ data/
   index.json
   profiles/*.profile
   sessions/<id>/...
+    mpatch/<patch_id>.json|.patch|.repair.md
   sessions/<id>.zip
   backups/<id>/<apply_id>/...
   tmp/
@@ -88,7 +94,8 @@ $env:MKL_THREADING_LAYER='TBB'
 其他环境把解释器换成自己的 Python 3.11+ 即可。
 
 测试覆盖 profile 规则、打包冲突、解析容错、diff 应用、CRLF/BOM、部分应用、LIFO 撤回、
-索引重建、归档、恶意 zip、导出 patch 在干净 git 副本上的应用等。逐条验收映射见
+索引重建、归档、恶意 zip、导出 patch 在干净 git 副本上的应用，以及 mpatch 副本隔离、
+模糊应用、失败修正请求和编码保持。逐条验收映射见
 [docs/ACCEPTANCE_MATRIX.md](docs/ACCEPTANCE_MATRIX.md)。
 
 ## 重要限制
@@ -96,6 +103,9 @@ $env:MKL_THREADING_LAYER='TBB'
 - 只处理文本补丁；删除文件、重命名、文件权限修改、二进制补丁会被拒绝。
 - v1 只支持文件级勾选，不支持 hunk 级勾选。
 - 应用补丁要求工程是 git 仓库（内部使用字节安全的行级引擎，不依赖 `git apply` 写盘）。
+- mpatch 是可选外部依赖；未安装时只使用严格引擎和缩进对齐，失败后直接生成修正请求。
+  mpatch 命令行按 UTF-8 读取副本；PatchBridge 会先把副本规范化为 UTF-8/LF，最终仍由严格引擎
+  按原编码/BOM 写回。
 - 工具只监听本机回环地址，没有登录/多用户机制。
 - 备份保留期过后，“应用后 vs 当前磁盘”的内容差异可能不可用。
 

@@ -17,6 +17,13 @@
 | 13 | 导出补丁可在干净副本上成功应用 | `tests/test_apply_revert.py::test_exported_patch_applies_in_clean_git_copy` |
 | 14 | CRLF + BOM 文件应用后换行/BOM 不变 | `tests/test_apply_revert.py::test_crlf_bom_preserved_after_apply`、`tests/test_diff_engine.py::test_modify_preserves_crlf_and_bom` |
 | 15 | 含 `../` 的恶意压缩包加载被拒绝 | `tests/test_archive.py::test_safe_extract_rejects_unsafe_names`、`test_safe_extract_rejects_symlink_entry` |
+| 16 | mpatch 只在副本运行，真实工作区不被写入 | `tests/test_mpatch.py::test_run_mpatch_never_writes_real_worktree` |
+| 17 | 严格失败后自动模糊应用，最终补丁可审阅/应用/撤回 | `tests/test_mpatch.py::test_fuzzy_fallback_applies_derived_patch` |
+| 18 | mpatch 失败生成 AI 修正请求，不自动应用 | `tests/test_mpatch.py::test_fuzzy_failure_builds_repair_and_artifact`、`tests/test_api.py::test_mpatch_settings_and_artifact_endpoint` |
+| 19 | 纯缩进冲突在 mpatch 前自动对齐 | `tests/test_mpatch.py::test_uniform_indentation_is_fixed_before_mpatch`、`tests/test_diff_engine.py::test_align_indentation_accepts_already_aligned_top_level_line` |
+| 20 | mpatch 派生补丁保持原文件 BOM/CRLF | `tests/test_mpatch.py::test_mpatch_result_preserves_bom_and_crlf` |
+| 21 | 历史页自动预览不写 mpatch 工件 | `tests/test_mpatch.py::test_preview_does_not_persist_mpatch_artifact` |
+| 22 | 查看归档会话不因自动预览而解压 | `tests/test_mpatch.py::test_preview_of_archived_session_does_not_unarchive` |
 
 ## 其他覆盖
 
@@ -33,7 +40,9 @@
 2. 新建 profile，打开文件树，搜索/勾选目录。
 3. 输入需求并打包，分别验证“复制完整文本”和“复制文件路径”。
 4. 粘贴示例回答，查看 diff、warning、状态徽章。
-5. 勾选部分文件应用，确认备份和事件。
-6. 撤回，确认文件恢复。
-7. 归档会话，刷新历史列表，打开详情并重新载入。
-8. 在设置中修改大文件阈值/自动归档开关并刷新。
+5. 构造上下文轻微漂移的补丁：dry-run 后应显示 `mpatch 模糊`，derived diff 正确；再构造
+   严重不匹配的补丁：应显示 `mpatch 未命中`/`待 AI 修正`，能复制修正请求。
+6. 勾选部分文件应用，确认备份和事件。
+7. 撤回，确认文件恢复。
+8. 归档会话，刷新历史列表，打开详情并重新载入。
+9. 在设置中修改大文件阈值/自动归档开关/mpatch 路径并刷新。

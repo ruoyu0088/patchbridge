@@ -555,17 +555,22 @@ def align_patch_indentation(
                         "无法自动推断统一偏移"
                     ),
                 )
-            if delta is None:
-                delta = line_delta
-            elif delta != line_delta:
-                return AlignResult(
-                    False,
-                    warnings=warnings,
-                    reason=(
-                        f"第 {hunk_index + 1} 个 hunk 内不同行需要不同的缩进偏移，"
-                        "无法用统一偏移修复"
-                    ),
-                )
+            # Lines already at the right indentation (often top-level lines
+            # while the body was dedented) contribute no offset.  They must
+            # not force the useful offset to zero; every non-zero offset in
+            # the hunk still has to agree.
+            if line_delta[0]:
+                if delta is None:
+                    delta = line_delta
+                elif delta != line_delta:
+                    return AlignResult(
+                        False,
+                        warnings=warnings,
+                        reason=(
+                            f"第 {hunk_index + 1} 个 hunk 内不同行需要不同的缩进偏移，"
+                            "无法用统一偏移修复"
+                        ),
+                    )
             aligned_old.append((line, file_line.content))
 
         if delta is None or delta[0] == "":

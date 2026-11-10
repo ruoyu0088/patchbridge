@@ -18,6 +18,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "backup_retention_days": 30,
     "max_files": 50000,
     "max_bundle_bytes": 80 * 1024 * 1024,
+    "mpatch_path": "",
+    "mpatch_fuzz_factor": 0.7,
+    "mpatch_timeout_seconds": 60,
+    "mpatch_repair_full_file_bytes": 16384,
+    "mpatch_repair_context_lines": 30,
 }
 
 
@@ -103,6 +108,16 @@ class AppConfig:
         merged["auto_archive_days"] = max(1, int(merged["auto_archive_days"]))
         merged["backup_retention_days"] = max(1, int(merged["backup_retention_days"]))
         merged["auto_archive_enabled"] = bool(merged["auto_archive_enabled"])
+        try:
+            merged["mpatch_fuzz_factor"] = min(1.0, max(0.0, float(merged["mpatch_fuzz_factor"])))
+        except (TypeError, ValueError):
+            merged["mpatch_fuzz_factor"] = DEFAULT_SETTINGS["mpatch_fuzz_factor"]
+        merged["mpatch_timeout_seconds"] = max(5, int(merged["mpatch_timeout_seconds"]))
+        merged["mpatch_repair_full_file_bytes"] = max(
+            1024, int(merged["mpatch_repair_full_file_bytes"])
+        )
+        merged["mpatch_repair_context_lines"] = max(5, int(merged["mpatch_repair_context_lines"]))
+        merged["mpatch_path"] = str(merged.get("mpatch_path") or "").strip()
         atomic_write_json(self.settings_path, merged)
         return merged
 

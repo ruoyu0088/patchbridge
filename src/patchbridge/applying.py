@@ -28,6 +28,12 @@ from .fsutil import (
     safe_target,
     sha256_bytes,
 )
+from .mpatch import (
+    MpatchOutcome,
+    artifact_payload,
+    build_repair_request,
+    run_mpatch_file,
+)
 from .profiles import Profile
 from .sessions import SessionStore, utc_now
 
@@ -55,6 +61,10 @@ class Evaluation:
     new_bytes: bytes | None = None
     file_patch: FilePatch | None = None
     diagnostics: dict[str, Any] | None = None
+    engine: str = "strict"
+    mpatch: dict[str, Any] | None = None
+    final_patch: str | None = None
+    repair: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +81,10 @@ class Evaluation:
             "current_sha256": self.current_sha256,
             "after_sha256": self.after_sha256,
             "diagnostics": self.diagnostics,
+            "engine": self.engine,
+            "mpatch": self.mpatch,
+            "final_patch": self.final_patch,
+            "repair": self.repair,
         }
 
 
@@ -110,6 +124,45 @@ def _parse_patch_entry(entry: dict[str, Any], root: Path, known: list[str]) -> F
     return patches[0]
 
 
+def _persist_fuzzy_result(
+    store: SessionStore,
+    session_id: str,
+    entry: dict[str, Any],
+    evaluation: Evaluation,
+    *,
+    current: bytes | None,
+    outcome: MpatchOutcome | None,
+    repair: str | None,
+    persist: bool = True,
+) -> None:
+    if outcome is None:
+        outcome = MpatchOutcome(
+            status="skipped",
+            reason="未尝试 mpatch",
+            path=evaluation.path,
+        )
+    report = artifact_payload(
+        outcome,
+        entry=entry,
+        current_sha256=sha256_bytes(current) if current is not None else None,
+        repair=repair,
+    )
+    if persist:
+        try:
+            store.save_mpatch_artifact(
+                session_id,
+                evaluation.patch_id,
+                report,
+                final_patch=evaluation.final_patch,
+                repair=repair,
+            )
+        except Exception:
+            # A failed diagnostic write must not turn a usable patch into a crash.
+            report["artifact_warning"] = "无法保存 mpatch 报告"
+    evaluation.mpatch = report
+    evaluation.repair = repair
+
+
 def evaluate_patch(
     store: SessionStore,
     session_id: str,
@@ -117,6 +170,7 @@ def evaluate_patch(
     *,
     selection: dict[str, Any] | None = None,
     meta: dict[str, Any] | None = None,
+    persist_artifacts: bool = True,
 ) -> Evaluation:
     meta = meta or store.meta(session_id)
     selection = selection or store.read_json(session_id, "selection.json") or {}
@@ -209,10 +263,170 @@ def evaluate_patch(
             eval_result.diagnostics = exc.details
             if exc.details.get("hint"):
                 eval_result.reason = f"{exc.message}：{exc.details['hint']}"
+        if exc.code != "patch_context_mismatch":
+            return eval_result
+
+        strict_reason = eval_result.reason
+        # Keep the original patch for the repair request.  Alignment mutates
+        # the parsed patch in place, and a later hunk may still fail.
+        try:
+            original_patch_text = canonical_patch(file_patch)
+        except AppError:
+            original_patch_text = ""
+        # The user asked for automatic fuzzy fallback.  Only pure indentation
+        # is normalized first; all other repairs go through mpatch in a copy.
+        if not file_patch.new_file and current is not None:
+            try:
+                aligned = align_patch_indentation(file_patch, current)
+            except AppError as align_exc:
+                eval_result.warnings = list(eval_result.warnings or []) + [
+                    f"自动缩进对齐未执行：{align_exc.message}"
+                ]
+            else:
+                if aligned.aligned:
+                    eval_result.warnings = list(eval_result.warnings or []) + list(aligned.warnings)
+                    try:
+                        aligned_result = apply_file_patch(file_patch, current, path=path)
+                    except AppError as retry_exc:
+                        strict_reason = retry_exc.message
+                    else:
+                        eval_result.new_bytes = aligned_result.data
+                        eval_result.after_sha256 = sha256_bytes(aligned_result.data)
+                        eval_result.warnings += list(aligned_result.warnings)
+                        eval_result.apply_status = "ok"
+                        eval_result.engine = "strict+align"
+                        eval_result.reason = "严格匹配失败，自动对齐缩进后应用成功"
+                        return eval_result
+
+        # If alignment stopped on a later hunk it may already have changed
+        # earlier hunks in memory.  Re-parse the original text so mpatch and
+        # the repair request always see the user's untouched patch.
+        if original_patch_text:
+            try:
+                reparsed = parse_unified_diff(
+                    original_patch_text,
+                    root=root,
+                    known_paths=known,
+                )
+            except AppError:
+                reparsed = []
+            if len(reparsed) == 1:
+                file_patch = reparsed[0]
+                eval_result.file_patch = file_patch
+
+        try:
+            patch_text = canonical_patch(file_patch)
+        except AppError as canonical_exc:
+            eval_result.reason = f"{strict_reason}；无法生成 mpatch 输入：{canonical_exc.message}"
+            return eval_result
+        repair_entry = dict(entry)
+        # Show the original stored patch, not a partially aligned copy.
+        if original_patch_text:
+            repair_entry["content"] = original_patch_text
+        outcome: MpatchOutcome | None = None
+        try:
+            outcome = run_mpatch_file(
+                patch_text,
+                root=root,
+                path=path,
+                new_file=file_patch.new_file,
+                config=store.config,
+                settings=store.config.load_settings(),
+            )
+        except Exception as mp_exc:  # noqa: BLE001 - adapter boundary must not crash the UI
+            outcome = MpatchOutcome(
+                status="failed",
+                reason=f"mpatch 调用异常：{mp_exc}",
+                path=path,
+                diagnostics={"kind": "internal", "message": str(mp_exc)},
+            )
+
+        if outcome.status == "ok" and outcome.final_patch:
+            try:
+                final_patches = parse_unified_diff(
+                    outcome.final_patch,
+                    root=root,
+                    known_paths=known,
+                )
+                if len(final_patches) != 1:
+                    raise AppError(
+                        "mpatch_path_mismatch",
+                        f"mpatch 结果包含 {len(final_patches)} 个文件，期望 1 个",
+                    )
+                final_patch = final_patches[0]
+                final_path = normalize_rel_path(final_patch.path)
+                if final_path != path:
+                    raise AppError(
+                        "mpatch_path_mismatch",
+                        f"mpatch 结果路径为 {final_path or '（空）'}，期望 {path}",
+                    )
+                final_patch.path = final_path
+                final_result = apply_file_patch(final_patch, current, path=path)
+            except AppError as revalidate_exc:
+                outcome.status = "revalidation_failed"
+                outcome.reason = f"mpatch 结果未通过严格复验：{revalidate_exc.message}"
+                outcome.final_patch = None
+                outcome.diagnostics = {
+                    **(outcome.diagnostics or {}),
+                    "kind": "revalidation_failed",
+                    "revalidation_error": revalidate_exc.message,
+                }
+            else:
+                eval_result.file_patch = final_patch
+                eval_result.final_patch = canonical_patch(final_patch)
+                eval_result.new_file = final_patch.new_file
+                eval_result.added = final_patch.added
+                eval_result.removed = final_patch.removed
+                eval_result.new_bytes = final_result.data
+                eval_result.after_sha256 = sha256_bytes(final_result.data)
+                eval_result.warnings += list(final_result.warnings)
+                eval_result.apply_status = "ok"
+                eval_result.engine = "mpatch"
+                eval_result.reason = (
+                    "mpatch 模糊应用成功；最终补丁由副本 git diff 生成，并已通过严格引擎复验"
+                )
+                _persist_fuzzy_result(
+                    store,
+                    session_id,
+                    entry,
+                    eval_result,
+                    current=current,
+                    outcome=outcome,
+                    repair=None,
+                    persist=persist_artifacts,
+                )
+                return eval_result
+
+        repair = build_repair_request(
+            meta=meta or {},
+            entry=repair_entry,
+            path=path,
+            current=current,
+            outcome=outcome,
+            strict_reason=strict_reason,
+            settings=store.config.load_settings(),
+        )
+        eval_result.apply_status = "conflict"
+        eval_result.engine = "mpatch" if outcome and outcome.status not in ("unavailable",) else "strict"
+        eval_result.final_patch = None
+        eval_result.reason = f"{strict_reason}；{outcome.reason if outcome else 'mpatch 未执行'}"
+        _persist_fuzzy_result(
+            store,
+            session_id,
+            entry,
+            eval_result,
+            current=current,
+            outcome=outcome,
+            repair=repair,
+            persist=persist_artifacts,
+        )
         return eval_result
+
     eval_result.new_bytes = result.data
     eval_result.after_sha256 = sha256_bytes(result.data)
     eval_result.warnings = list(eval_result.warnings or []) + list(result.warnings)
+    eval_result.apply_status = "ok"
+    eval_result.engine = "strict"
     return eval_result
 
 
@@ -238,13 +452,22 @@ def dry_run(
                 details={"missing": sorted(wanted - found)},
             )
     results = [
-        evaluate_patch(store, session_id, entry, selection=selection, meta=meta).as_dict()
+        evaluate_patch(
+            store,
+            session_id,
+            entry,
+            selection=selection,
+            meta=meta,
+            persist_artifacts=persist,
+        ).as_dict()
         for entry in entries
     ]
     summary = {
         "ok": all(item["apply_status"] == "ok" for item in results),
         "conflicts": sum(1 for item in results if item["apply_status"] != "ok"),
         "hash_changed": sum(1 for item in results if item["hash_status"] == "changed"),
+        "fuzzy_applied": sum(1 for item in results if item["engine"] in ("mpatch", "strict+align")),
+        "repairs": sum(1 for item in results if item["repair"]),
         "results": results,
     }
     if persist:
@@ -256,6 +479,9 @@ def dry_run(
                 "ok": summary["ok"],
                 "conflicts": summary["conflicts"],
                 "hash_changed": summary["hash_changed"],
+                "fuzzy_applied": summary["fuzzy_applied"],
+                "repairs": summary["repairs"],
+                "engines": {item["patch_id"]: item["engine"] for item in results},
             },
         )
     return summary
@@ -443,9 +669,11 @@ def apply_session(
             details={"paths": sorted(duplicate_paths)},
         )
 
-    # Build one canonical patch for the audit trail.
+    # Build one canonical patch for the audit trail.  For a fuzzy result this
+    # is the derived ``git diff`` from the copy, not the user's original text;
+    # the original remains untouched under patches/.
     combined = "".join(
-        canonical_patch(item.file_patch)
+        item.final_patch or canonical_patch(item.file_patch)
         for item in evaluations
         if item.file_patch is not None
     )
@@ -559,6 +787,7 @@ def apply_session(
         "patch_hashes": {
             str(entry.get("id")): entry.get("sha256") for entry in entries_all
         },
+        "engines": {item.patch_id: item.engine for item in evaluations},
         "hash_changed_confirmed": sorted(confirm),
     }
     store.append_event(session_id, "apply", event_data)

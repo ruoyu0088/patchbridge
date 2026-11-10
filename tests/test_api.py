@@ -194,6 +194,47 @@ def test_unavailable_project_blocks_tree_and_pack(tmp_path: Path):
     assert packed.status_code == 409
 
 
+def test_mpatch_settings_and_artifact_endpoint(tmp_path: Path):
+    client, project = _client(tmp_path)
+    settings = client.get("/api/settings").json()["data"]
+    assert settings["settings"]["mpatch_fuzz_factor"] == 0.7
+    assert "mpatch_path" in settings["settings"]
+    if not settings["mpatch"]["available"]:
+        return
+
+    (project / "src" / "calculator.py").write_text(
+        "def add(left, right):\n    return left + right  # sum\n", encoding="utf-8"
+    )
+    profile = f"name: Demo\nroot: {project}\nmode: exclude\n\n[rules]\n"
+    project_id = client.post("/api/projects", json={"raw": profile}).json()["data"]["project"]["id"]
+    packed = client.post(
+        f"/api/projects/{project_id}/pack",
+        json={"requirement": "annotate", "files": ["src/calculator.py"]},
+    ).json()["data"]
+    session_id = packed["session_id"]
+    answer = """## 文件补丁
+```diff
+--- a/src/calculator.py
++++ b/src/calculator.py
+@@ -1,2 +1,3 @@
+ def add(left, right):
+     return left + right
++    # note
+```
+"""
+    client.post(f"/api/sessions/{session_id}/answer", json={"answer": answer})
+    dry = client.post(f"/api/sessions/{session_id}/dry-run", json={"patch_ids": ["p0001"]})
+    assert dry.status_code == 200
+    result = dry.json()["data"]["results"][0]
+    assert result["engine"] == "mpatch", result
+    artifact = client.get(f"/api/sessions/{session_id}/patches/p0001/mpatch")
+    assert artifact.status_code == 200
+    data = artifact.json()["data"]["artifact"]
+    assert data["status"] == "ok"
+    assert data["final_patch"]
+    assert "src/calculator.py" in data["path"]
+
+
 def test_index_rebuild_endpoint(tmp_path: Path):
     client, _ = _client(tmp_path)
     assert client.get("/api/index/status").json()["ok"] is True

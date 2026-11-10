@@ -24,6 +24,7 @@ from .config import AppConfig
 from .errors import AppError
 from .exporting import combined_patch, disk_diff, export_markdown
 from .fsutil import read_text_file
+from .mpatch import mpatch_version, resolve_mpatch
 from .packing import build_bundle
 from .profiles import (
     create_profile,
@@ -106,6 +107,11 @@ class SettingsBody(BaseModel):
     backup_retention_days: int | None = None
     max_files: int | None = None
     max_bundle_bytes: int | None = None
+    mpatch_path: str | None = None
+    mpatch_fuzz_factor: float | None = None
+    mpatch_timeout_seconds: int | None = None
+    mpatch_repair_full_file_bytes: int | None = None
+    mpatch_repair_context_lines: int | None = None
 
 
 def ok(data: Any = None) -> dict[str, Any]:
@@ -195,11 +201,17 @@ def create_api(config: AppConfig) -> FastAPI:
     def get_settings() -> dict[str, Any]:
         settings = config.load_settings()
         prompt = config.resolve_prompt_path(settings)
+        mpatch = resolve_mpatch(settings)
         return ok(
             {
                 "settings": settings,
                 "prompt_path_resolved": str(prompt),
                 "prompt_exists": prompt.exists(),
+                "mpatch": {
+                    "available": mpatch is not None,
+                    "path": str(mpatch) if mpatch else "",
+                    "version": mpatch_version(mpatch) if mpatch else None,
+                },
             }
         )
 
@@ -390,6 +402,13 @@ def create_api(config: AppConfig) -> FastAPI:
                 align_added=align_added,
             )
         )
+
+    @app.get("/api/sessions/{session_id}/patches/{patch_id}/mpatch")
+    def get_mpatch(session_id: str, patch_id: str) -> dict[str, Any]:
+        artifact = store.get_mpatch_artifact(session_id, patch_id)
+        if artifact is None:
+            raise AppError("mpatch_not_found", "还没有 mpatch 报告", status=404)
+        return ok({"artifact": artifact})
 
     @app.post("/api/sessions/{session_id}/dry-run")
     def post_dry_run(session_id: str, body: DryRunBody) -> dict[str, Any]:

@@ -6,6 +6,7 @@ import re
 import secrets
 import shutil
 import threading
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -483,6 +484,7 @@ class SessionStore:
             "patches": manifest_entries,
         }
         atomic_write_json(directory / "parsed.json", parsed)
+        self.invalidate_mpatch(session_id)
 
     def get_parsed(self, session_id: str) -> dict[str, Any] | None:
         data = self.read_json(session_id, "parsed.json")
@@ -513,6 +515,87 @@ class SessionStore:
             if patch.get("id") == patch_id:
                 return patch
         raise AppError("patch_not_found", f"补丁不存在：{patch_id}", status=404)
+
+    # ------------------------------------------------------ mpatch artifacts
+    def save_mpatch_artifact(
+        self,
+        session_id: str,
+        patch_id: str,
+        report: dict[str, Any],
+        *,
+        final_patch: str | None = None,
+        repair: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a derived mpatch result without touching the original patch."""
+        if not _PATCH_ID_RE.fullmatch(patch_id):
+            raise AppError("invalid_patch_id", "补丁 ID 不合法")
+        directory = ensure_dir(self.ensure_dir(session_id) / "mpatch")
+        atomic_write_json(directory / f"{patch_id}.json", report)
+        if final_patch:
+            atomic_write_text(directory / f"{patch_id}.patch", final_patch)
+        else:
+            (directory / f"{patch_id}.patch").unlink(missing_ok=True)
+        if repair:
+            atomic_write_text(directory / f"{patch_id}.repair.md", repair)
+        else:
+            (directory / f"{patch_id}.repair.md").unlink(missing_ok=True)
+        return report
+
+    def get_mpatch_artifact(self, session_id: str, patch_id: str) -> dict[str, Any] | None:
+        if not _PATCH_ID_RE.fullmatch(patch_id):
+            raise AppError("invalid_patch_id", "补丁 ID 不合法")
+        data = self.read_json(session_id, f"mpatch/{patch_id}.json")
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            raise AppError("session_corrupt", f"mpatch/{patch_id}.json 损坏", status=500)
+        item = dict(data)
+
+        def optional(rel: str) -> str | None:
+            try:
+                return self.read_text(session_id, rel)
+            except AppError as exc:
+                if exc.status == 404:
+                    return None
+                raise
+
+        item["final_patch"] = optional(f"mpatch/{patch_id}.patch")
+        item["repair"] = optional(f"mpatch/{patch_id}.repair.md")
+        return item
+
+    def mpatch_reports(self, session_id: str) -> dict[str, dict[str, Any]]:
+        directory = self.session_dir(session_id) / "mpatch"
+        names: list[str] = []
+        if directory.is_dir():
+            names = [child.name for child in directory.glob("*.json")]
+        elif self.zip_path(session_id).exists():
+            with zipfile.ZipFile(self.zip_path(session_id)) as archive:
+                names = [
+                    Path(name).name
+                    for name in archive.namelist()
+                    if name.startswith("mpatch/") and name.endswith(".json")
+                ]
+        reports: dict[str, dict[str, Any]] = {}
+        for name in names:
+            patch_id = Path(name).stem
+            if not _PATCH_ID_RE.fullmatch(patch_id):
+                continue
+            data = self.read_json(session_id, f"mpatch/{patch_id}.json")
+            if isinstance(data, dict):
+                reports[patch_id] = data
+        return reports
+
+    def invalidate_mpatch(self, session_id: str, patch_id: str | None = None) -> None:
+        """Drop derived results whenever the source patch or answer changes."""
+        directory = self.session_dir(session_id) / "mpatch"
+        if not directory.is_dir():
+            return
+        if patch_id is None:
+            shutil.rmtree(directory, ignore_errors=True)
+            return
+        (directory / f"{patch_id}.json").unlink(missing_ok=True)
+        (directory / f"{patch_id}.patch").unlink(missing_ok=True)
+        (directory / f"{patch_id}.repair.md").unlink(missing_ok=True)
 
     def update_commit(self, session_id: str, commit_message: str) -> dict[str, Any]:
         if self.has_any_apply(session_id):
@@ -578,6 +661,7 @@ class SessionStore:
         atomic_write_json(manifest_path, manifest)
         parsed["patches"] = new_entries
         self.write_json(session_id, "parsed.json", parsed)
+        self.invalidate_mpatch(session_id, patch_id)
         self.append_event(session_id, "edit", {"field": "patch", "patch_id": patch_id})
         entry = dict(entry)
         entry["content"] = self.get_patch(session_id, patch_id)["content"]
@@ -681,6 +765,8 @@ class SessionStore:
         if "patches" in parsed:
             parsed["patches"] = new_entries
             self.write_json(session_id, "parsed.json", parsed)
+        for entry in ordered:
+            self.invalidate_mpatch(session_id, entry["id"])
         self.append_event(
             session_id,
             "merge",
@@ -956,6 +1042,7 @@ class SessionStore:
             "selection": selection,
             "parsed": parsed,
             "patches": patches,
+            "mpatch": self.mpatch_reports(session_id),
             "events": events,
             "has_any_apply": self.has_any_apply(session_id),
             "has_unreverted_apply": self.has_unreverted_apply(session_id),

@@ -147,6 +147,25 @@ def test_align_indentation_shifts_context_and_added_lines(project_root: Path):
     assert "    return value + 1;" in applied.text
 
 
+def test_align_indentation_accepts_already_aligned_top_level_line(project_root: Path):
+    current = b"def add(left, right):\n    return left + right\n"
+    text = """diff --git a/src/foo.js b/src/foo.js
+--- a/src/foo.js
++++ b/src/foo.js
+@@ -1,2 +1,3 @@
+ def add(left, right):
+   return left + right
++  # note
+"""
+    patch = parse_one(text, project_root, known=("src/foo.js",))
+    result = align_patch_indentation(patch, current)
+    assert result.aligned is True, result.reason
+    assert result.changes[0]["count"] == 2
+    aligned_patch = parse_one(result.content, project_root, known=("src/foo.js",))
+    applied = apply_file_patch(aligned_patch, current)
+    assert applied.text == "def add(left, right):\n    return left + right\n    # note\n"
+
+
 def test_align_indentation_ignores_blank_context_lines(project_root: Path):
     current = b"  function foo() {\n\n    return 1;\n  }\n"
     text = """diff --git a/src/foo.js b/src/foo.js

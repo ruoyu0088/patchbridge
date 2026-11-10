@@ -294,6 +294,32 @@ h3 { font-size: 15px; margin: 0 0 8px; }
   font-size: 12px;
   line-height: 1.5;
 }
+.repair-panel {
+  margin: 0 15px 12px;
+  padding: 10px 12px;
+  border: 1px solid #f0d7a8;
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: #6b4a12;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.repair-panel > div:first-child { margin-bottom: 8px; }
+.repair-panel .muted { color: #7c653b; }
+.repair-panel details { margin-top: 8px; }
+.repair-panel summary { cursor: pointer; font-weight: 600; }
+.repair-text {
+  max-height: 320px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: #fffdf7;
+  color: #3f3420;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
 .patch-edit { padding: 0 15px 15px; }
 .editor-toolbar {
   display: flex;

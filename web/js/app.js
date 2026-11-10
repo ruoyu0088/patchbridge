@@ -961,6 +961,11 @@ const SessionPage = {
     statusFor(patch) {
       return this.statuses[patch.id] || null;
     },
+    displayPatch(patch) {
+      const status = this.statusFor(patch);
+      if (status && status.final_patch) return status.final_patch;
+      return patch.content;
+    },
     hashState(patch) {
       const status = this.statusFor(patch);
       if (status) return status.hash_status;
@@ -1293,6 +1298,14 @@ const SessionPage = {
       }
       await copyText(this.requirement, '用户 Prompt');
     },
+    async copyRepair(patch) {
+      const status = this.statusFor(patch);
+      if (!status || !status.repair) {
+        notify('当前补丁没有 AI 修正请求', 'error');
+        return;
+      }
+      await copyText(status.repair, 'AI 修正请求');
+    },
     async loadDisk() {
       this.diskLoading = true;
       try {
@@ -1558,6 +1571,19 @@ const SessionPage = {
                     <span v-if="statusFor(patch)" class="badge" :class="'scope-' + statusFor(patch).scope_status">
                       {{ scopeText(statusFor(patch).scope_status) }}
                     </span>
+                    <span
+                      v-if="statusFor(patch) && statusFor(patch).engine === 'mpatch' && statusFor(patch).apply_status === 'ok'"
+                      class="badge ok"
+                    >mpatch 模糊</span>
+                    <span
+                      v-else-if="statusFor(patch) && statusFor(patch).engine === 'mpatch'"
+                      class="badge warning"
+                    >mpatch 未命中</span>
+                    <span
+                      v-else-if="statusFor(patch) && statusFor(patch).engine === 'strict+align'"
+                      class="badge ok"
+                    >自动对齐</span>
+                    <span v-if="statusFor(patch) && statusFor(patch).repair" class="badge warning">待 AI 修正</span>
                     <span class="badge muted">p{{ patch.p_level || 1 }}</span>
                   </template>
                   <template v-else>
@@ -1569,7 +1595,10 @@ const SessionPage = {
                   <div v-for="(warning, idx) in statusFor(patch).warnings" :key="idx">• {{ warning }}</div>
                 </div>
 
-                <div v-if="statusFor(patch) && statusFor(patch).reason" class="conflict-summary">
+                <div
+                  v-if="statusFor(patch) && statusFor(patch).apply_status !== 'ok' && statusFor(patch).reason"
+                  class="conflict-summary"
+                >
                   <div>{{ statusFor(patch).reason }}</div>
                   <div v-if="!patchLocked && !isApplied(patch)" class="small-actions">
                     <button
@@ -1579,6 +1608,21 @@ const SessionPage = {
                     >{{ aligningPatchId === patch.id ? '对齐中…' : '一键对齐缩进' }}</button>
                     <button class="btn tiny" @click="startEditPatch(patch)">打开补丁编辑器</button>
                   </div>
+                </div>
+
+                <div v-if="statusFor(patch) && statusFor(patch).repair" class="repair-panel">
+                  <div>
+                    <strong>严格匹配和 mpatch 都没能应用这个补丁。</strong>
+                    <span class="muted">已按 mpatch 的失败位置生成修正请求，复制给 Web AI 重新生成即可。</span>
+                  </div>
+                  <div class="small-actions">
+                    <button class="btn tiny primary" @click="copyRepair(patch)">复制 AI 修正请求</button>
+                    <button class="btn tiny" @click="startEditPatch(patch)">仍要手工编辑</button>
+                  </div>
+                  <details>
+                    <summary>查看修正请求内容</summary>
+                    <pre class="repair-text mono">{{ statusFor(patch).repair }}</pre>
+                  </details>
                 </div>
 
                 <div v-if="editingPatchId === patch.id" class="patch-edit">
@@ -1668,7 +1712,17 @@ const SessionPage = {
                     </aside>
                   </div>
                 </div>
-                <diff-view v-else-if="openPatches[patch.id]" :content="patch.content" />
+                <div
+                  v-if="editingPatchId !== patch.id && openPatches[patch.id] && statusFor(patch) && statusFor(patch).final_patch"
+                  class="alert info small"
+                  style="margin: 0 15px 10px;"
+                >
+                  mpatch 已在临时副本中完成模糊应用，下面显示的是由副本 git diff 生成的最终补丁；应用时会再次用严格引擎校验。
+                </div>
+                <diff-view
+                  v-if="editingPatchId !== patch.id && openPatches[patch.id]"
+                  :content="displayPatch(patch)"
+                />
 
                 <div class="patch-actions">
                   <button class="btn tiny" @click="dryOne(patch)">单文件 dry-run</button>
@@ -1956,6 +2010,7 @@ const SettingsPage = {
         this.meta = {
           prompt_path_resolved: data.prompt_path_resolved,
           prompt_exists: data.prompt_exists,
+          mpatch: data.mpatch || {},
         };
         this.largeMb = Math.max(0.1, (Number(this.settings.large_file_bytes) || 1048576) / 1024 / 1024);
       } catch (err) {
@@ -1982,8 +2037,12 @@ const SettingsPage = {
     },
     async reloadMeta() {
       try {
-        const meta = await api.get('/api/meta');
-        this.meta = meta;
+        const data = await api.get('/api/settings');
+        this.meta = {
+          prompt_path_resolved: data.prompt_path_resolved,
+          prompt_exists: data.prompt_exists,
+          mpatch: data.mpatch || {},
+        };
       } catch (err) {
         notify(err.message, 'error');
       }
@@ -2025,6 +2084,31 @@ const SettingsPage = {
           模板支持 <code v-pre>{{PROJECT_NAME}}</code>、<code v-pre>{{FILE_COUNT}}</code>、
           <code v-pre>{{TOTAL_BYTES}}</code> 等占位符。
         </p>
+
+        <label class="field-label">mpatch 可执行文件</label>
+        <input v-model="settings.mpatch_path" placeholder="留空自动查找 mpatch 或 C:\\portable_apps\\bin\\mpatch.exe" />
+        <div v-if="meta && meta.mpatch" class="path-copy-row">
+          <code class="mono path-box break">{{ meta.mpatch.path || '未找到' }}</code>
+          <span class="badge" :class="meta.mpatch.available ? 'ok' : 'bad'">
+            {{ meta.mpatch.available ? (meta.mpatch.version || '可用') : '不可用' }}
+          </span>
+          <button class="btn tiny" @click="reloadMeta">重新检测</button>
+        </div>
+        <p class="hint">
+          严格引擎失败后，会自动在临时副本中调用 mpatch；真实工程目录不会交给 mpatch 写入。
+        </p>
+
+        <label class="field-label">mpatch 模糊相似度阈值（0–1）</label>
+        <input v-model.number="settings.mpatch_fuzz_factor" type="number" min="0" max="1" step="0.05" />
+        <p class="hint">默认 0.7。越低越容易匹配，但误配风险也越高。</p>
+
+        <label class="field-label">mpatch 超时（秒）</label>
+        <input v-model.number="settings.mpatch_timeout_seconds" type="number" min="5" />
+        <label class="field-label">AI 修正请求：整文件附加上限（字节）</label>
+        <input v-model.number="settings.mpatch_repair_full_file_bytes" type="number" min="1024" />
+        <p class="hint">文件不超过该值时附完整内容，否则只附失败位置附近的上下文。</p>
+        <label class="field-label">AI 修正请求：上下文行数</label>
+        <input v-model.number="settings.mpatch_repair_context_lines" type="number" min="5" />
 
         <label class="field-label">备份保留天数</label>
         <input v-model.number="settings.backup_retention_days" type="number" min="1" />

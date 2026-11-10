@@ -12,7 +12,8 @@ PatchBridge 解决的是“代码量大时，让 Web 版 AI 改几行代码”�
 
 应用补丁要求工程位于 git 仓库中；工具会检查 `git rev-parse --is-inside-work-tree`。
 实际写盘使用内置事务式行级引擎，以保证 CRLF/BOM/编码可控；导出的标准 patch 仍可用
-`git apply` 验证和应用。
+`git apply` 验证和应用。严格引擎失败时，可自动在临时副本中调用外部 mpatch 做相似度匹配，
+但最终写盘仍回到严格引擎，mpatch 永远不直接接触真实工程目录。
 
 ## 2. 技术选型
 
@@ -50,6 +51,10 @@ data/
     patches/
       manifest.json
       p0001.diff
+    mpatch/
+      p0001.json
+      p0001.patch
+      p0001.repair.md
     events.jsonl
   sessions/<session_id>.zip
   backups/<session_id>/<apply_id>/
@@ -200,7 +205,42 @@ packed -> parsed -> applied -> reverted
 - 应用前全部在内存试算，然后备份、写 journal、逐文件原子替换；任一失败按备份整体回滚。
 - 启动时扫描未完成 journal：若 apply 事件尚未落盘则回滚，若事件已落盘则只清理 journal。
 
-### 4.7 归档
+### 4.7 mpatch 模糊回退
+
+每次 `evaluate_patch` 按以下顺序尝试，全部自动执行：
+
+1. 严格行级引擎（原行为）；
+2. 严格失败时尝试 `align_patch_indentation`，只接受每个 hunk 一个统一的空格/Tab 偏移；
+3. 对齐仍失败或对齐后严格重试仍失败，调用外部 mpatch。
+
+mpatch 的隔离方式：
+
+- 每个文件在 `data/tmp/` 下建立一次性副本，只把副本路径交给 mpatch；真实工程目录从不作为
+  mpatch 的 target。
+- 副本统一规范化为 UTF-8/LF，mpatch 以 `-n -a -f <threshold>` 先 dry-run 再应用；
+  然后只允许目标文件发生变化，用 `git diff --cached` 生成标准 unified diff。
+- 该 diff 会重新解析，并用严格引擎在真实文件的当前内容上再应用一次；只有这一步成功，
+  结果才标记为可应用。因此 CRLF/BOM/原编码仍由现有编码层保持。
+- 原始补丁文本不改；`Evaluation.final_patch` 保存派生结果，`apply_session` 合并时优先使用它。
+- 首次应用后仍然锁定原始补丁；需要改补丁必须“重新载入”。
+
+失败时：
+
+- 解析 stderr 中的 `Hunk N failed`、最佳匹配行号/相似度、near-miss、ambiguous 等信息；
+- 生成 `<patch_id>.repair.md`：小文件附完整当前文件，大文件附失败行附近上下文；
+- 返回 `待 AI 修正`，不自动应用，也不修改原补丁；
+- 用户可复制修正请求回 Web AI，或继续使用手工编辑器。
+
+工件（`sessions/<id>/mpatch/`）：
+
+- `<patch_id>.json`：状态、原因、原始/当前/最终补丁 hash、诊断、mpatch 版本与耗时；
+- `<patch_id>.patch`：mpatch 生成的最终补丁（仅成功时）；
+- `<patch_id>.repair.md`：修正请求（仅失败时）。
+
+任何补丁编辑、合并、重新解析都会使该补丁的 mpatch 工件失效，避免把旧结果应用到新补丁。
+归档 zip 内保持同样结构；查看归档会话时按 member 读取，不整体解压。
+
+### 4.8 归档
 
 - 归档 zip 的条目是相对于会话目录的路径，结构与未归档目录一致。
 - 拒绝绝对路径、盘符、`..`、反斜杠、符号链接、重复条目和超限解压体积。
@@ -217,11 +257,12 @@ packed -> parsed -> applied -> reverted
 3. 应用前备份；新增文件撤回删除。
 4. 撤回 LIFO + after hash 校验。
 5. 编码、BOM、换行保持。
-6. zip 解压安全，临时目录异常清理。
-7. 事件只追加；meta/index/settings 原子写。
-8. 全局异常处理返回结构化 JSON，不把堆栈抛给前端。
-9. 解析结果允许手工修正。
-10. 绑定回环地址；无公网认证设计。
+6. mpatch 只在临时副本运行；临时目录无论成功/异常都清理；最终写盘前重新严格校验。
+7. zip 解压安全，临时目录异常清理。
+8. 事件只追加；meta/index/settings 原子写。
+9. 全局异常处理返回结构化 JSON，不把堆栈抛给前端。
+10. 解析结果允许手工修正。
+11. 绑定回环地址；无公网认证设计。
 
 ## 6. 已知限制
 
@@ -229,6 +270,9 @@ packed -> parsed -> applied -> reverted
 - 只支持文本补丁；删除/重命名/二进制/权限补丁拒绝。
 - 应用要求 git 仓库；内部引擎不依赖 `git apply` 写盘。
 - 非 UTF-8 编码依赖启发式检测；检测不确定时按二进制/不支持处理。
+- mpatch 是可选外部依赖，且其 CLI 按 UTF-8 读取副本；PatchBridge 会先把副本规范化为 UTF-8/LF，
+  最终仍由严格引擎按原编码/BOM 写回。无法可靠识别的文本才会被拒绝。mpatch 的超时、崩溃或
+  不兼容输出一律视为“未命中”，不会写入真实工程。
 - 备份过期后“应用后 vs 当前磁盘”的内容差异不可用。
 - 跨会话撤回冲突依靠 hash 校验和用户确认，不实现全局应用栈。
 - 本地单用户工具，不适合直接暴露到公网。
@@ -238,8 +282,8 @@ packed -> parsed -> applied -> reverted
 
 | 平台 | 启动 | 依赖 |
 |---|---|---|
-| Windows 10/11 | 双击 `start.bat` | Python 3.11+、Git、依赖包 |
-| macOS / Linux | `PYTHONPATH=src python -m patchbridge --open` | Python 3.11+、Git、依赖包 |
+| Windows 10/11 | 双击 `start.bat` | Python 3.11+、Git、依赖包；可选 mpatch 1.8+ |
+| macOS / Linux | `PYTHONPATH=src python -m patchbridge --open` | Python 3.11+、Git、依赖包；可选 mpatch 1.8+ |
 
 `start.bat` 使用 CRLF 换行，并优先使用 `C:\pixi_env\.pixi\envs\default\python.exe`。
 前端 Vue 运行时已 vendored，不需要联网或 Node 构建。
@@ -248,6 +292,7 @@ packed -> parsed -> applied -> reverted
 
 - 单元：profile、扫描、打包、解析、diff、编码、zip 安全。
 - 集成：会话、索引、备份、部分应用、LIFO 撤回、归档、重新载入。
+- mpatch：副本隔离、模糊应用、失败修正请求、缩进先行、BOM/CRLF 保持。
 - 端到端：FastAPI 流程、导出 patch 在干净 git 副本上 `git apply`。
 - 前端：人工冒烟；核心逻辑不依赖浏览器。
 - 逐条验收映射见 `docs/ACCEPTANCE_MATRIX.md`。
