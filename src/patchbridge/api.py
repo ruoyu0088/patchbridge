@@ -37,6 +37,7 @@ from .profiles import (
     update_profile,
 )
 from .scanner import scan_project
+from .scripting import run_session_script
 from .sessions import SessionStore, utc_now
 
 logger = logging.getLogger("patchbridge.api")
@@ -59,6 +60,7 @@ class PackBody(BaseModel):
     requirement: str
     files: list[str]
     title: str | None = None
+    mode: str = "python"
 
 
 class AnswerBody(BaseModel):
@@ -91,6 +93,11 @@ class ApplyBody(BaseModel):
     confirm_hash_changes: list[str] = Field(default_factory=list)
 
 
+class ScriptRunBody(BaseModel):
+    script: str | None = None
+    timeout_seconds: int | None = None
+
+
 class RevertBody(BaseModel):
     confirm_hash_changes: bool = False
 
@@ -104,7 +111,11 @@ class SettingsBody(BaseModel):
     auto_archive_enabled: bool | None = None
     auto_archive_days: int | None = None
     prompt_template_path: str | None = None
+    python_prompt_template_path: str | None = None
     backup_retention_days: int | None = None
+    script_timeout_seconds: int | None = None
+    script_max_output_chars: int | None = None
+    diff_context_lines: int | None = None
     max_files: int | None = None
     max_bundle_bytes: int | None = None
     mpatch_path: str | None = None
@@ -201,12 +212,15 @@ def create_api(config: AppConfig) -> FastAPI:
     def get_settings() -> dict[str, Any]:
         settings = config.load_settings()
         prompt = config.resolve_prompt_path(settings)
+        python_prompt = config.resolve_prompt_path(settings, "python")
         mpatch = resolve_mpatch(settings)
         return ok(
             {
                 "settings": settings,
                 "prompt_path_resolved": str(prompt),
                 "prompt_exists": prompt.exists(),
+                "python_prompt_path_resolved": str(python_prompt),
+                "python_prompt_exists": python_prompt.exists(),
                 "mpatch": {
                     "available": mpatch is not None,
                     "path": str(mpatch) if mpatch else "",
@@ -287,7 +301,8 @@ def create_api(config: AppConfig) -> FastAPI:
                 status=409,
                 details={"files": missing[:100]},
             )
-        prompt_path = config.resolve_prompt_path(settings)
+        mode = body.mode if body.mode in {"diff", "python"} else "diff"
+        prompt_path = config.resolve_prompt_path(settings, mode)
         if not prompt_path.exists():
             raise AppError(
                 "prompt_missing",
@@ -301,6 +316,7 @@ def create_api(config: AppConfig) -> FastAPI:
             requirement=body.requirement,
             selected_paths=requested,
             prompt_template=prompt,
+            mode=mode,
             max_bundle_bytes=int(settings.get("max_bundle_bytes") or 80 * 1024 * 1024),
         )
         session_id = store.create_session(
@@ -311,6 +327,7 @@ def create_api(config: AppConfig) -> FastAPI:
             requirement=body.requirement,
             bundle_text=bundle.text,
             selection=bundle.selection,
+            mode=mode,
             title=body.title,
         )
         directory = store.session_dir(session_id)
@@ -323,6 +340,7 @@ def create_api(config: AppConfig) -> FastAPI:
                 "file_count": bundle.file_count,
                 "total_bytes": bundle.total_bytes,
                 "token_estimate": bundle.token_estimate,
+                "mode": bundle.mode,
                 "selection": bundle.selection,
             }
         )
@@ -373,6 +391,19 @@ def create_api(config: AppConfig) -> FastAPI:
                 "warnings": (parsed or {}).get("warnings") or [],
                 "session": details,
             }
+        )
+
+    @app.post("/api/sessions/{session_id}/script/run")
+    def run_script(session_id: str, body: ScriptRunBody | None = None) -> dict[str, Any]:
+        body = body or ScriptRunBody()
+        return ok(
+            run_session_script(
+                store,
+                config,
+                session_id,
+                script_override=body.script,
+                timeout_seconds=body.timeout_seconds,
+            )
         )
 
     @app.put("/api/sessions/{session_id}/commit")

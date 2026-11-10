@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
+from .diff_view import build_diff_rows
 from .diff_engine import (
     AlignResult,
     FilePatch,
@@ -59,14 +60,22 @@ class Evaluation:
     current_sha256: str | None = None
     after_sha256: str | None = None
     new_bytes: bytes | None = None
+    original_bytes: bytes | None = None
     file_patch: FilePatch | None = None
     diagnostics: dict[str, Any] | None = None
     engine: str = "strict"
     mpatch: dict[str, Any] | None = None
     final_patch: str | None = None
     repair: str | None = None
+    diff_rows: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
+        diff_rows = self.diff_rows
+        if diff_rows is None and self.new_bytes is not None:
+            try:
+                diff_rows = build_diff_rows(self.original_bytes or b"", self.new_bytes)
+            except Exception:
+                diff_rows = None
         return {
             "patch_id": self.patch_id,
             "path": self.path,
@@ -85,6 +94,7 @@ class Evaluation:
             "mpatch": self.mpatch,
             "final_patch": self.final_patch,
             "repair": self.repair,
+            "diff_rows": diff_rows,
         }
 
 
@@ -254,6 +264,7 @@ def evaluate_patch(
             eval_result.hash_status = STATUS_CHANGED
 
     current = None if not exists else target.read_bytes()
+    eval_result.original_bytes = current
     try:
         result = apply_file_patch(file_patch, current, path=path)
     except AppError as exc:

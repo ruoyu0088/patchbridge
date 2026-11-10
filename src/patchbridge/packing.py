@@ -37,6 +37,7 @@ class BundleResult:
     file_count: int
     total_bytes: int
     token_estimate: int
+    mode: str = "diff"
     conflicts: list[str] = field(default_factory=list)
 
 
@@ -105,9 +106,12 @@ def build_bundle(
     requirement: str,
     selected_paths: list[str],
     prompt_template: str,
+    mode: str = "diff",
     generated_at: datetime | None = None,
     max_bundle_bytes: int = 80 * 1024 * 1024,
 ) -> BundleResult:
+    if mode not in {"diff", "python"}:
+        raise AppError("invalid_mode", "不支持的打包模式", details={"mode": mode})
     if not requirement or not requirement.strip():
         raise AppError("requirement_empty", "需求不能为空")
     if not selected_paths:
@@ -186,6 +190,7 @@ def build_bundle(
             "FILE_COUNT": len(unique),
             "TOTAL_BYTES": total,
             "GENERATED_AT": generated,
+            "MODE": mode,
         },
     )
     for token in _find_reserved(prompt):
@@ -201,6 +206,7 @@ def build_bundle(
 
     parts: list[str] = [
         f"# {BUNDLE_VERSION}\n",
+        f"MODE: {mode}\n",
         f"project: {profile.name}\n",
         f"root: {root}\n",
         f"generated_at: {generated}\n",
@@ -239,6 +245,7 @@ def build_bundle(
 
     selection = {
         "version": 1,
+        "mode": mode,
         "root": str(root),
         "profile": profile.to_snapshot(),
         "total_bytes": total,
@@ -248,6 +255,7 @@ def build_bundle(
         text=bundle_text,
         selection=selection,
         tree=tree,
+        mode=mode,
         file_count=len(unique),
         total_bytes=total,
         token_estimate=estimate_tokens(bundle_text),

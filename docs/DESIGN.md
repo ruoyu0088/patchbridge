@@ -51,6 +51,9 @@ data/
     patches/
       manifest.json
       p0001.diff
+    script/
+      script.py
+      report.json
     mpatch/
       p0001.json
       p0001.patch
@@ -98,6 +101,7 @@ node_modules/
 
 ```text
 # PATCHBRIDGE BUNDLE v1
+MODE: python
 project: ...
 root: ...
 generated_at: ...
@@ -133,9 +137,22 @@ bytes: 12345
 
 ### 4.3 回答解析
 
-内置提示词要求：
+打包前在 `MODE: python|diff` 中选择回答格式，并写入 `bundle.txt` 与 `selection.json`；默认 Python。
 
-```markdown
+Python 模式内置提示词要求：
+
+````markdown
+## 修改说明
+## Commit 建议
+## Python 补丁脚本
+```python
+replace_text("src/app.py", "old", "new", expected=1)
+```
+````
+
+diff 模式内置提示词要求：
+
+````markdown
 ## 修改说明
 ## Commit 建议
 ## 文件补丁
@@ -143,9 +160,10 @@ bytes: 12345
 ```diff
 ...
 ```
-```
+````
 
-解析器容错：
+Python 模式解析器提取第一个 Python 代码块；没有代码块时，兼容旧回答按 diff 解析并给出 warning。
+diff 模式解析器容错：
 
 - 中英文标题、关键词、缺少标题都尽量识别。
 - 代码块有无语言标记都可。
@@ -250,6 +268,48 @@ mpatch 的隔离方式：
 - 自动归档默认关闭；只处理没有未撤回 apply、状态为 `reverted` 或 `abandoned` 且超过
   指定天数的会话。手动归档有未撤回 apply 时要求二次确认。
 
+### 4.9 Python 脚本模式
+
+AI 不再输出 diff，而是输出一段只调用 PatchBridge 补丁 API 的 Python 程序。目标是把“算行号、
+复制上下文、处理编码/EOL”从模型输出中移除，只保留“改什么”。
+
+**内存工作区**
+
+- 执行开始时所有选中文件读入 `Workspace`，每个文件保存 `original_text`（运行开始时的磁盘内容）、
+  `current_text`、编码/BOM/EOL/final_newline；打包快照的 sha256 仍在应用前校验。
+- API 只修改内存中的 `current_text`；脚本不能直接读写文件，也没有 `open`/`os`/`pathlib`。
+- 运行结束后逐个文件比较 original/current；有变化的文件用 `difflib.unified_diff` 生成文本 diff，
+  再交给现有 `parse_unified_diff` → `ParsedPatch`，后续 dry-run/apply/备份/撤回完全复用。
+- 新增文件生成 `/dev/null` 风格的补丁；删除/重命名/权限修改不提供 API。
+
+**API 语义**
+
+- 定位：`read_text`、`count`、`replace_text`、`replace_regex`、`insert_before`、`insert_after`、
+  `replace_between`、`create_file`。
+- 校验：`assert_count`、`assert_contains`、`assert_not_contains`、`assert_python_syntax`。
+- 每个修改 API 必须传 `expected`（预期匹配数）。实际数不符时按实际匹配执行并记录 warning，
+  不静默跳过；`limit` 可限制单次替换数。
+- 顺序执行，后一步看到前一步的 `current_text`；`replace_between` 要求锚点对唯一。
+- 运行时异常保留异常前的部分修改并生成部分补丁；超时丢弃整个运行结果；语法错误不生成补丁。
+- 只能改本次选中文件或新建 profile 可见且尚不存在的文件；路径必须相对、不能越界。
+
+**受限执行**
+
+- 使用 `exec` + 自定义 builtins，允许 `re, collections, itertools, functools, math, json,
+  textwrap, string, difflib, typing, dataclasses`，屏蔽 `open/eval/exec/compile/__import__/...`。
+- 在 daemon 线程中执行，`sys.settrace` 检查 deadline；超时只能停止 Python 字节码，不能抢占
+  C 扩展调用，因此超时结果整体丢弃，绝不读取可能仍在变化的内存工作区。
+- 脚本 stdout 截断到设置上限；步骤、warning、stdout、异常写入 `script/report.json`。
+
+**存储与 UI**
+
+- 会话 `meta.json`/`selection.json` 记录 `mode`；`script/script.py` 保存最后执行的脚本，
+  `script/report.json` 保存执行报告；补丁仍存 `patches/`。
+- 审阅页提供“Python 脚本”标签，可编辑并重新执行；粘贴回答时自动执行一次。
+- diff 预览由 `diff_view.build_diff_rows` 生成左右并排行，按上下文行数裁剪；原始 unified diff
+  保留在折叠区。
+- 归档 zip 内结构相同，读取脚本/报告按 member 流式读取。
+
 ## 5. 安全底线
 
 1. 所有写操作只在后端。
@@ -262,7 +322,9 @@ mpatch 的隔离方式：
 8. 事件只追加；meta/index/settings 原子写。
 9. 全局异常处理返回结构化 JSON，不把堆栈抛给前端。
 10. 解析结果允许手工修正。
-11. 绑定回环地址；无公网认证设计。
+11. Python 脚本只在内存工作区执行，不暴露文件系统对象；导入和 builtins 白名单；
+    超时丢弃结果，异常只保留部分内存修改。最终仍走“生成补丁 → dry-run → 备份 → 应用”链路。
+12. 绑定回环地址；无公网认证设计。
 
 ## 6. 已知限制
 
@@ -277,6 +339,9 @@ mpatch 的隔离方式：
 - 跨会话撤回冲突依靠 hash 校验和用户确认，不实现全局应用栈。
 - 本地单用户工具，不适合直接暴露到公网。
 - 大工程扫描有 `max_files` 上限；超过时收窄 profile。
+- Python 模式只支持选中文件内的文本修改和新建文件；不支持删除/重命名/整文件覆盖。
+  超时无法抢占 C 扩展，只能丢弃本次内存工作区并保留上一次成功补丁。
+- Python 脚本受白名单限制，不适合需要第三方库或复杂重构的任务；此类任务仍可用 diff 模式。
 
 ## 7. 平台依赖
 
@@ -293,6 +358,8 @@ mpatch 的隔离方式：
 - 单元：profile、扫描、打包、解析、diff、编码、zip 安全。
 - 集成：会话、索引、备份、部分应用、LIFO 撤回、归档、重新载入。
 - mpatch：副本隔离、模糊应用、失败修正请求、缩进先行、BOM/CRLF 保持。
+- Python 模式：bundle mode 头、脚本/回答解析、内存 API、expected 不符、越界路径、新建文件、
+  语法错误/超时、BOM/CRLF 保持、并排 diff 行结构。
 - 端到端：FastAPI 流程、导出 patch 在干净 git 副本上 `git apply`。
 - 前端：人工冒烟；核心逻辑不依赖浏览器。
 - 逐条验收映射见 `docs/ACCEPTANCE_MATRIX.md`。

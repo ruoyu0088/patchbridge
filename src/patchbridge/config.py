@@ -15,7 +15,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "auto_archive_enabled": False,
     "auto_archive_days": 30,
     "prompt_template_path": "",
+    "python_prompt_template_path": "",
     "backup_retention_days": 30,
+    "script_timeout_seconds": 20,
+    "script_max_output_chars": 20000,
+    "diff_context_lines": 3,
     "max_files": 50000,
     "max_bundle_bytes": 80 * 1024 * 1024,
     "mpatch_path": "",
@@ -69,6 +73,10 @@ class AppConfig:
     def default_prompt_path(self) -> Path:
         return Path(__file__).resolve().parent / "prompts" / "default.md"
 
+    @property
+    def default_python_prompt_path(self) -> Path:
+        return Path(__file__).resolve().parent / "prompts" / "python.md"
+
     def ensure_dirs(self) -> None:
         for path in (
             self.data_dir,
@@ -108,6 +116,11 @@ class AppConfig:
         merged["auto_archive_days"] = max(1, int(merged["auto_archive_days"]))
         merged["backup_retention_days"] = max(1, int(merged["backup_retention_days"]))
         merged["auto_archive_enabled"] = bool(merged["auto_archive_enabled"])
+        merged["script_timeout_seconds"] = min(300, max(1, int(merged["script_timeout_seconds"])))
+        merged["script_max_output_chars"] = min(
+            1_000_000, max(1000, int(merged["script_max_output_chars"]))
+        )
+        merged["diff_context_lines"] = min(50, max(0, int(merged["diff_context_lines"])))
         try:
             merged["mpatch_fuzz_factor"] = min(1.0, max(0.0, float(merged["mpatch_fuzz_factor"])))
         except (TypeError, ValueError):
@@ -121,11 +134,18 @@ class AppConfig:
         atomic_write_json(self.settings_path, merged)
         return merged
 
-    def resolve_prompt_path(self, settings: dict[str, Any] | None = None) -> Path:
+    def resolve_prompt_path(
+        self, settings: dict[str, Any] | None = None, mode: str = "diff"
+    ) -> Path:
         settings = settings or self.load_settings()
-        configured = str(settings.get("prompt_template_path") or "").strip()
-        if not configured:
-            return self.default_prompt_path
+        if mode == "python":
+            configured = str(settings.get("python_prompt_template_path") or "").strip()
+            if not configured:
+                return self.default_python_prompt_path
+        else:
+            configured = str(settings.get("prompt_template_path") or "").strip()
+            if not configured:
+                return self.default_prompt_path
         path = Path(os.path.expanduser(configured))
         if not path.is_absolute():
             path = self.project_root / path

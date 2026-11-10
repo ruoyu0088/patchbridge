@@ -24,6 +24,17 @@
 | 20 | mpatch 派生补丁保持原文件 BOM/CRLF | `tests/test_mpatch.py::test_mpatch_result_preserves_bom_and_crlf` |
 | 21 | 历史页自动预览不写 mpatch 工件 | `tests/test_mpatch.py::test_preview_does_not_persist_mpatch_artifact` |
 | 22 | 查看归档会话不因自动预览而解压 | `tests/test_mpatch.py::test_preview_of_archived_session_does_not_unarchive` |
+| 23 | 打包头记录 Python 模式，模式随会话保存 | `tests/test_scripting.py::test_python_bundle_header_and_mode`、`tests/test_api.py::test_python_mode_pack_and_script_api` |
+| 24 | Python 脚本只在内存执行并生成可应用/撤回补丁 | `tests/test_scripting.py::test_script_runs_in_memory_and_generates_patch` |
+| 25 | `expected` 不符时按实际匹配应用并 warning | `tests/test_scripting.py::test_expected_mismatch_applies_actual_and_warns` |
+| 26 | 越界路径不修改、不生成补丁，结果标记 partial | `tests/test_scripting.py::test_out_of_scope_path_is_partial_without_patch` |
+| 27 | 新建文件可应用/撤回；语法错误保留旧补丁 | `tests/test_scripting.py::test_create_file_patch_applies_and_reverts`、`test_invalid_script_keeps_existing_patches` |
+| 28 | Python 生成补丁保持原文件 BOM/CRLF | `tests/test_scripting.py::test_bom_and_crlf_survive_script_patch` |
+| 29 | 无语言标记的 Python 代码块仍可解析 | `tests/test_scripting.py::test_parse_script_without_language_fence` |
+| 30 | 并排 diff 的行号/新增/删除结构正确 | `tests/test_diff_view.py::test_side_by_side_rows_for_change`、`test_side_by_side_add_has_no_old_line`、`test_side_by_side_delete_has_no_new_line` |
+| 31 | Python 会话导出文档包含回答格式与脚本 | `tests/test_scripting.py::test_export_markdown_contains_python_script` |
+| 32 | 顺序 API 修改能看到前一步结果 | `tests/test_scripting.py::test_sequential_edits_see_previous_changes` |
+| 33 | Python 补丁保持原文件“无末尾换行” | `tests/test_scripting.py::test_no_final_newline_is_preserved` |
 
 ## 其他覆盖
 
@@ -33,16 +44,21 @@
 - 磁盘差异：`tests/test_archive_revert.py::test_disk_diff_reports_external_change`
 - 大文件/二进制/.git 排除：`tests/test_profiles.py::test_scanner_skips_git_binary_large`
 - 最终行无换行：`tests/test_diff_engine.py::test_modify_no_final_newline`、`tests/test_packing.py::test_content_is_not_reindented_and_final_newline`
+- Python 语法错误边界：`tests/test_scripting.py::test_invalid_script_keeps_existing_patches`
+- Python 模式 API 全流程：`tests/test_api.py::test_python_mode_pack_and_script_api`
 
 ## 手工冒烟
 
 1. 双击 `start.bat`，浏览器打开工程列表。
 2. 新建 profile，打开文件树，搜索/勾选目录。
 3. 输入需求并打包，分别验证“复制完整文本”和“复制文件路径”。
-4. 粘贴示例回答，查看 diff、warning、状态徽章。
-5. 构造上下文轻微漂移的补丁：dry-run 后应显示 `mpatch 模糊`，derived diff 正确；再构造
+4. 以 Python 模式打包，粘贴含 `replace_text` + `assert_count` 的回答；确认自动执行、生成补丁，
+   “Python 脚本”页显示步骤/OK，审阅页显示左右并排 diff。
+5. 修改脚本使 `expected` 不符，确认按实际匹配应用、出现 warning、仍能生成补丁。
+6. 粘贴 diff 回答（Python 会话），确认回退为 diff 解析并给出 warning。
+7. 构造上下文轻微漂移的补丁：dry-run 后应显示 `mpatch 模糊`，derived diff 正确；再构造
    严重不匹配的补丁：应显示 `mpatch 未命中`/`待 AI 修正`，能复制修正请求。
-6. 勾选部分文件应用，确认备份和事件。
-7. 撤回，确认文件恢复。
-8. 归档会话，刷新历史列表，打开详情并重新载入。
-9. 在设置中修改大文件阈值/自动归档开关/mpatch 路径并刷新。
+8. 勾选部分文件应用，确认备份和事件。
+9. 撤回，确认文件恢复。
+10. 归档会话，刷新历史列表，打开详情并重新载入。
+11. 在设置中修改大文件阈值/自动归档开关/Python 提示词与超时/mpatch 路径并刷新。

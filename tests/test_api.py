@@ -100,6 +100,53 @@ def test_full_api_flow(tmp_path: Path):
     assert missing.json()["error"]["code"] == "session_not_found"
 
 
+def test_python_mode_pack_and_script_api(tmp_path: Path):
+    client, project = _client(tmp_path)
+    profile = f"name: Demo\nroot: {project}\nmode: exclude\n\n[rules]\n"
+    project_id = client.post("/api/projects", json={"raw": profile}).json()["data"]["project"]["id"]
+
+    packed = client.post(
+        f"/api/projects/{project_id}/pack",
+        json={
+            "requirement": "Annotate add.",
+            "files": ["src/calculator.py"],
+            "mode": "python",
+        },
+    )
+    assert packed.status_code == 200
+    assert packed.json()["data"]["mode"] == "python"
+    session_id = packed.json()["data"]["session_id"]
+
+    answer = """## 修改说明
+Annotate add.
+## Commit 建议
+feat: annotate add
+## Python 补丁脚本
+```python
+replace_text("src/calculator.py", "    return left + right", "    # sum\\n    return left + right", expected=1)
+assert_count("src/calculator.py", "# sum", 1)
+```
+"""
+    parsed = client.post(f"/api/sessions/{session_id}/answer", json={"answer": answer})
+    assert parsed.status_code == 200
+    assert parsed.json()["data"]["parsed"]["mode"] == "python"
+    assert "replace_text" in parsed.json()["data"]["parsed"]["script"]
+
+    before = (project / "src" / "calculator.py").read_text(encoding="utf-8")
+    run = client.post(f"/api/sessions/{session_id}/script/run", json={})
+    assert run.status_code == 200
+    result = run.json()["data"]
+    assert result["report"]["status"] == "ok"
+    assert result["patches"]
+    assert (project / "src" / "calculator.py").read_text(encoding="utf-8") == before
+
+    dry = client.post(
+        f"/api/sessions/{session_id}/dry-run",
+        json={"patch_ids": [result["patches"][0]["id"]]},
+    )
+    assert dry.json()["data"]["ok"] is True
+
+
 def test_align_indent_endpoint_returns_preview(tmp_path: Path):
     client, project = _client(tmp_path)
     (project / "src" / "foo.js").write_text(

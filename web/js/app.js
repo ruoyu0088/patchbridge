@@ -37,6 +37,64 @@ const DiffView = {
   `,
 };
 
+const SideDiff = {
+  name: 'SideDiff',
+  props: {
+    rows: { type: Array, default: () => [] },
+    context: { type: Number, default: 3 },
+  },
+  computed: {
+    hunks() {
+      const rows = this.rows || [];
+      if (!rows.length) return [];
+      const changed = [];
+      rows.forEach((row, index) => {
+        if (row.type !== 'equal') changed.push(index);
+      });
+      if (!changed.length) return [];
+      const ranges = [];
+      for (const index of changed) {
+        const start = Math.max(0, index - this.context);
+        const end = Math.min(rows.length, index + this.context + 1);
+        const last = ranges[ranges.length - 1];
+        if (last && start <= last.end) last.end = Math.max(last.end, end);
+        else ranges.push({ start, end });
+      }
+      return ranges.map((range) => {
+        const slice = rows.slice(range.start, range.end);
+        const first = slice[0] || {};
+        const oldStart = first.old_line || 1;
+        const newStart = first.new_line || 1;
+        const oldCount = slice.filter((row) => row.old_line).length;
+        const newCount = slice.filter((row) => row.new_line).length;
+        return {
+          key: `${range.start}-${range.end}`,
+          header: `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`,
+          rows: slice,
+        };
+      });
+    },
+  },
+  template: `
+    <div class="side-diff">
+      <div v-if="!hunks.length" class="muted pad-small">没有可显示的差异</div>
+      <div v-for="hunk in hunks" :key="hunk.key" class="side-hunk">
+        <div class="side-hunk-head mono">{{ hunk.header }}</div>
+        <table class="side-table">
+          <tbody>
+            <tr v-for="(row, idx) in hunk.rows" :key="idx" :class="'side-' + row.type">
+              <td class="side-ln">{{ row.old_line || '' }}</td>
+              <td class="side-text old"><span>{{ row.old_text || ' ' }}</span></td>
+              <td class="side-ln">{{ row.new_line || '' }}</td>
+              <td class="side-text new"><span>{{ row.new_text || ' ' }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `,
+};
+
 const FileTreeNode = {
   name: 'FileTreeNode',
   props: {
@@ -273,6 +331,7 @@ const ProjectPage = {
       query: '',
       selected: {},
       requirement: '',
+      packMode: 'python',
       packing: false,
       packResult: null,
       bundleText: '',
@@ -451,7 +510,7 @@ const ProjectPage = {
       try {
         this.packResult = await api.post(
           `/api/projects/${encodeURIComponent(this.projectId)}/pack`,
-          { requirement: this.requirement, files: this.selectedPaths },
+          { requirement: this.requirement, files: this.selectedPaths, mode: this.packMode },
         );
         this.bundleText = '';
         this.bundlePreviewOpen = false;
@@ -670,6 +729,23 @@ const ProjectPage = {
             </div>
           </div>
           <div class="panel-head"><h2>需求与打包</h2></div>
+          <label class="field-label">回答格式</label>
+          <div class="mode-picker">
+            <label class="mode-option" :class="{ active: packMode === 'python' }">
+              <input v-model="packMode" type="radio" value="python" />
+              <span>
+                <strong>Python 脚本</strong>
+                <small>AI 调用补丁 API，不写 diff、不算行号；推荐</small>
+              </span>
+            </label>
+            <label class="mode-option" :class="{ active: packMode === 'diff' }">
+              <input v-model="packMode" type="radio" value="diff" />
+              <span>
+                <strong>Unified diff</strong>
+                <small>传统格式，兼容旧会话和外部工具</small>
+              </span>
+            </label>
+          </div>
           <label class="field-label">修改需求</label>
           <textarea
             v-model="requirement"
@@ -687,6 +763,7 @@ const ProjectPage = {
             <div class="bundle-result-head">
               <h3>打包完成</h3>
               <span class="badge ok">{{ packResult.file_count }} 个文件</span>
+              <span class="pill">{{ packResult.mode === 'python' ? 'Python 脚本模式' : 'diff 模式' }}</span>
               <span class="pill">{{ formatBytes(packResult.bundle_size) }}</span>
               <span class="pill">约 {{ packResult.token_estimate }} tokens</span>
             </div>
@@ -761,7 +838,7 @@ const ProjectPage = {
 
 const SessionPage = {
   name: 'SessionPage',
-  components: { DiffView },
+  components: { DiffView, SideDiff },
   props: { sessionId: { type: String, required: true } },
   data() {
     return {
@@ -791,6 +868,10 @@ const SessionPage = {
       applyResult: null,
       reverting: false,
       merging: false,
+      scriptText: '',
+      scriptRunning: false,
+      diffContext: 3,
+      contextInitialized: false,
     };
   },
   computed: {
@@ -846,6 +927,26 @@ const SessionPage = {
       const count = this.patchDraft ? this.patchDraft.split('\n').length : 1;
       return Array.from({ length: count }, (_, index) => index + 1).join('\n');
     },
+    mode() {
+      return (this.details && this.details.meta && this.details.meta.mode) || 'diff';
+    },
+    pythonMode() {
+      return this.mode === 'python';
+    },
+    scriptReport() {
+      return (
+        (this.details && this.details.script && this.details.script.report) ||
+        (this.parsed && this.parsed.script_result) ||
+        null
+      );
+    },
+    scriptSource() {
+      return (
+        (this.details && this.details.script && this.details.script.source) ||
+        (this.parsed && this.parsed.script) ||
+        ''
+      );
+    },
     duplicateGroups() {
       const pending = this.patches.filter((patch) => !this.appliedPatchIds.has(patch.id));
       const map = new Map();
@@ -891,6 +992,19 @@ const SessionPage = {
       try {
         this.details = await api.get(`/api/sessions/${encodeURIComponent(this.sessionId)}`);
         this.answerText = this.details.answer || '';
+        this.scriptText = this.scriptSource || '';
+        if (!this.contextInitialized) {
+          this.contextInitialized = true;
+          try {
+            const settingsData = await api.get('/api/settings');
+            const configured = Number(settingsData.settings && settingsData.settings.diff_context_lines);
+            if (Number.isFinite(configured)) {
+              this.diffContext = Math.max(0, Math.min(50, configured));
+            }
+          } catch (err) {
+            /* 设置读取失败不影响审阅，保留默认 3 行 */
+          }
+        }
         this.commitDraft = (this.details.parsed && this.details.parsed.commit_message) || '';
         this.selected = {};
         for (const patch of this.patches) {
@@ -1242,6 +1356,42 @@ const SessionPage = {
         notify(err.message, 'error');
       }
     },
+    async runScript(script = null) {
+      const source = (script || this.scriptText || this.scriptSource || '').trim();
+      if (!source) {
+        notify('没有可执行的 Python 脚本', 'error');
+        return null;
+      }
+      this.scriptRunning = true;
+      try {
+        const data = await api.post(`/api/sessions/${this.sessionId}/script/run`, {
+          script: source,
+        });
+        this.scriptText = source;
+        const report = data.report || {};
+        const count = (data.patches || []).length;
+        if (report.status === 'ok') {
+          notify(`Python 脚本执行完成，生成 ${count} 个文件补丁`, 'success');
+        } else if (report.status === 'partial') {
+          notify(`脚本部分执行：${report.error || '有步骤失败'}；已生成 ${count} 个补丁`, 'error');
+        } else {
+          notify(`脚本未执行：${report.reason || report.error || report.status}`, 'error');
+        }
+        await this.load();
+        if (count) this.tab = 'review';
+        else if (report.status !== 'ok') this.tab = 'script';
+        return data;
+      } catch (err) {
+        notify(err.message, 'error');
+        return null;
+      } finally {
+        this.scriptRunning = false;
+      }
+    },
+    async copyScript() {
+      if (!this.scriptText) return;
+      await copyText(this.scriptText, 'Python 脚本');
+    },
     async submitAnswer() {
       if (!this.answerDraft.trim()) {
         notify('请先粘贴 AI 回答', 'error');
@@ -1253,10 +1403,15 @@ const SessionPage = {
           answer: this.answerDraft,
         });
         const count = (data.parsed && data.parsed.patches.length) || 0;
+        const script = (data.parsed && data.parsed.script) || '';
         this.answerDraft = '';
-        notify(`解析完成，提取到 ${count} 个文件补丁`, count ? 'success' : 'error');
+        notify(`解析完成，提取到 ${count} 个文件补丁`, count ? 'success' : 'info');
         this.tab = 'review';
         await this.load();
+        if (this.pythonMode && script) {
+          notify('已提取 Python 脚本，正在内存工作区执行…', 'info');
+          await this.runScript(script);
+        }
       } catch (err) {
         notify(err.message, 'error');
       } finally {
@@ -1459,6 +1614,7 @@ const SessionPage = {
           <button :class="['tab', tab === 'review' ? 'active' : '']" @click="tab = 'review'">补丁审阅</button>
           <button :class="['tab', tab === 'bundle' ? 'active' : '']" @click="tab = 'bundle'">打包文本</button>
           <button :class="['tab', tab === 'answer' ? 'active' : '']" @click="tab = 'answer'">AI 回答</button>
+          <button v-if="pythonMode" :class="['tab', tab === 'script' ? 'active' : '']" @click="tab = 'script'">Python 脚本</button>
           <button :class="['tab', tab === 'events' ? 'active' : '']" @click="tab = 'events'">事件</button>
           <button :class="['tab', tab === 'disk' ? 'active' : '']" @click="tab = 'disk'; !disk && loadDisk()">磁盘差异</button>
         </div>
@@ -1527,6 +1683,18 @@ const SessionPage = {
                 <div>
                   <button class="btn tiny" @click="toggleAll">反选未应用</button>
                   <span class="muted">已选 {{ selectedIds.length }} / {{ patches.length }}</span>
+                  <label class="muted small context-picker">
+                    上下文
+                    <select v-model.number="diffContext">
+                      <option :value="0">0</option>
+                      <option :value="1">1</option>
+                      <option :value="3">3</option>
+                      <option :value="5">5</option>
+                      <option :value="10">10</option>
+                      <option :value="20">20</option>
+                      <option :value="50">50</option>
+                    </select>
+                  </label>
                 </div>
                 <div class="button-row">
                   <button
@@ -1719,10 +1887,18 @@ const SessionPage = {
                 >
                   mpatch 已在临时副本中完成模糊应用，下面显示的是由副本 git diff 生成的最终补丁；应用时会再次用严格引擎校验。
                 </div>
-                <diff-view
-                  v-if="editingPatchId !== patch.id && openPatches[patch.id]"
-                  :content="displayPatch(patch)"
-                />
+                <div v-if="editingPatchId !== patch.id && openPatches[patch.id]" class="diff-area">
+                  <side-diff
+                    v-if="statusFor(patch) && statusFor(patch).diff_rows"
+                    :rows="statusFor(patch).diff_rows.rows"
+                    :context="diffContext"
+                  />
+                  <diff-view v-else :content="displayPatch(patch)" />
+                  <details class="raw-patch">
+                    <summary>查看原始补丁</summary>
+                    <diff-view :content="displayPatch(patch)" />
+                  </details>
+                </div>
 
                 <div class="patch-actions">
                   <button class="btn tiny" @click="dryOne(patch)">单文件 dry-run</button>
@@ -1801,6 +1977,54 @@ const SessionPage = {
             <button class="btn primary" :disabled="busy" @click="submitAnswer">重新解析</button>
           </div>
           <pre class="prose answer-raw">{{ answerText || '（还没有保存 AI 回答）' }}</pre>
+        </section>
+
+        <section v-if="tab === 'script' && pythonMode" class="panel script-panel">
+          <div class="panel-head">
+            <h2>Python 补丁脚本</h2>
+            <div class="small-actions">
+              <button class="btn tiny" @click="copyScript">复制脚本</button>
+              <button class="btn primary tiny" :disabled="scriptRunning || patchLocked" @click="runScript()">
+                {{ scriptRunning ? '执行中…' : '执行脚本' }}
+              </button>
+            </div>
+          </div>
+          <p class="muted">
+            脚本只会修改内存中的工作区；执行成功或部分成功后才会生成补丁。真实文件在“应用选中补丁”之前不会改变。
+          </p>
+          <textarea
+            v-model="scriptText"
+            class="code-editor script-editor"
+            spellcheck="false"
+            placeholder="AI 输出的 Python 补丁脚本…"
+          ></textarea>
+          <div v-if="patchLocked" class="alert info">会话已应用补丁，脚本已锁定；如需再改请“重新载入”。</div>
+
+          <div v-if="scriptReport" class="script-report">
+            <div class="script-report-head">
+              <span class="badge" :class="scriptReport.status === 'ok' ? 'ok' : (scriptReport.status === 'partial' ? 'warning' : 'error')">
+                {{ scriptReport.status }}
+              </span>
+              <span class="muted">{{ scriptReport.reason || scriptReport.error || '' }}</span>
+              <span class="muted mono">{{ scriptReport.elapsed_ms }} ms</span>
+            </div>
+            <div v-if="scriptReport.warnings && scriptReport.warnings.length" class="alert warning small">
+              <div v-for="(warning, idx) in scriptReport.warnings" :key="idx">· {{ warning }}</div>
+            </div>
+            <details v-if="scriptReport.stdout" class="script-details" open>
+              <summary>stdout</summary>
+              <pre class="script-stdout">{{ scriptReport.stdout }}</pre>
+            </details>
+            <details v-if="scriptReport.steps && scriptReport.steps.length" class="script-details" open>
+              <summary>执行步骤（{{ scriptReport.steps.length }}）</summary>
+              <div v-for="step in scriptReport.steps" :key="step.index" class="script-step">
+                <span class="badge" :class="step.status === 'ok' ? 'ok' : 'warning'">{{ step.status }}</span>
+                <span class="mono">#{{ step.index }} {{ step.api }}</span>
+                <code>{{ step.path }}</code>
+                <span class="muted">{{ step.message }}</span>
+              </div>
+            </details>
+          </div>
         </section>
 
         <section v-if="tab === 'events'" class="panel">
@@ -2010,6 +2234,8 @@ const SettingsPage = {
         this.meta = {
           prompt_path_resolved: data.prompt_path_resolved,
           prompt_exists: data.prompt_exists,
+          python_prompt_path_resolved: data.python_prompt_path_resolved,
+          python_prompt_exists: data.python_prompt_exists,
           mpatch: data.mpatch || {},
         };
         this.largeMb = Math.max(0.1, (Number(this.settings.large_file_bytes) || 1048576) / 1024 / 1024);
@@ -2041,6 +2267,8 @@ const SettingsPage = {
         this.meta = {
           prompt_path_resolved: data.prompt_path_resolved,
           prompt_exists: data.prompt_exists,
+          python_prompt_path_resolved: data.python_prompt_path_resolved,
+          python_prompt_exists: data.python_prompt_exists,
           mpatch: data.mpatch || {},
         };
       } catch (err) {
@@ -2084,6 +2312,23 @@ const SettingsPage = {
           模板支持 <code v-pre>{{PROJECT_NAME}}</code>、<code v-pre>{{FILE_COUNT}}</code>、
           <code v-pre>{{TOTAL_BYTES}}</code> 等占位符。
         </p>
+
+        <label class="field-label">Python 模式提示词模板路径</label>
+        <input v-model="settings.python_prompt_template_path" placeholder="留空使用内置 Python SDK 模板" />
+        <div class="path-copy-row" v-if="meta">
+          <code class="mono path-box break">{{ meta.python_prompt_path_resolved }}</code>
+          <span class="badge" :class="meta.python_prompt_exists ? 'ok' : 'bad'">
+            {{ meta.python_prompt_exists ? '存在' : '不存在' }}
+          </span>
+          <button class="btn tiny" @click="reloadMeta">检查</button>
+        </div>
+        <label class="field-label">Python 脚本超时（秒）</label>
+        <input v-model.number="settings.script_timeout_seconds" type="number" min="1" max="300" />
+        <label class="field-label">脚本 stdout 最大字符数</label>
+        <input v-model.number="settings.script_max_output_chars" type="number" min="1000" />
+        <label class="field-label">diff 默认上下文行数（0–50）</label>
+        <input v-model.number="settings.diff_context_lines" type="number" min="0" max="50" />
+        <p class="hint">Python 脚本在独立线程中执行，只修改内存工作区；超时会丢弃结果，不会写真实文件。</p>
 
         <label class="field-label">mpatch 可执行文件</label>
         <input v-model="settings.mpatch_path" placeholder="留空自动查找 mpatch 或 C:\\portable_apps\\bin\\mpatch.exe" />

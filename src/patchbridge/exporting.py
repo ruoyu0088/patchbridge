@@ -95,6 +95,7 @@ def export_markdown(store: SessionStore, session_id: str) -> str:
         f"- 工程：{meta.get('project_name') or ''} (`{meta.get('root') or ''}`)",
         f"- 创建时间：{meta.get('created_at') or ''}",
         f"- 状态：{details.get('status') or ''}",
+        f"- 回答格式：{meta.get('mode') or 'diff'}",
         f"- 打包文件数：{meta.get('file_count') or 0}",
         f"- 打包字节数：{meta.get('total_bytes') or 0}",
         "",
@@ -115,6 +116,17 @@ def export_markdown(store: SessionStore, session_id: str) -> str:
                 "",
                 "```text",
                 details.get("answer").rstrip("\n"),
+                "```",
+                "",
+            ]
+        )
+    if parsed.get("script"):
+        lines.extend(
+            [
+                "## Python 补丁脚本",
+                "",
+                "```python",
+                str(parsed.get("script") or "").rstrip("\n"),
                 "```",
                 "",
             ]

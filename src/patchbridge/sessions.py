@@ -36,7 +36,7 @@ from .fsutil import (
     sha256_bytes,
     sha256_file,
 )
-from .parsing import ParseResult, ParsedPatch, parse_answer
+from .parsing import ParseResult, ParsedPatch, parse_answer, parse_script_answer
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$")
 _PATCH_ID_RE = re.compile(r"^p[0-9]{4,}$")
@@ -367,11 +367,14 @@ class SessionStore:
         requirement: str,
         bundle_text: str,
         selection: dict[str, Any],
+        mode: str = "diff",
         title: str | None = None,
         reloaded_from: str | None = None,
     ) -> str:
         with self._lock:
             session_id = new_session_id()
+            if mode not in {"diff", "python"}:
+                raise AppError("invalid_mode", "不支持的会话模式", details={"mode": mode})
             directory = self.ensure_dir(session_id)
             now = utc_now()
             title = (title or "").strip()
@@ -385,6 +388,7 @@ class SessionStore:
                 "project_name": project_name,
                 "root": root,
                 "profile": profile,
+                "mode": mode,
                 "title": title,
                 "created_at": now,
                 "updated_at": now,
@@ -408,6 +412,7 @@ class SessionStore:
                     "file_count": meta["file_count"],
                     "total_bytes": meta["total_bytes"],
                     "bundle_sha256": meta["bundle_sha256"],
+                    "mode": mode,
                 },
             )
             return session_id
@@ -432,12 +437,27 @@ class SessionStore:
         meta = self.meta(session_id)
         selection = self.read_json(session_id, "selection.json") or {}
         known = [item.get("path") for item in selection.get("files", []) if item.get("path")]
-        result = parse_answer(answer, root=Path(meta.get("root") or ""), known_paths=known)
+        mode = meta.get("mode") or selection.get("mode") or "diff"
+        self.invalidate_script(session_id)
+        if mode == "python":
+            result = parse_script_answer(answer, root=Path(meta.get("root") or ""), known_paths=known)
+            if not result.script:
+                # A Python-mode session may still receive a legacy/plain diff
+                # answer.  Fall back rather than silently discarding it.
+                fallback = parse_answer(answer, root=Path(meta.get("root") or ""), known_paths=known)
+                if fallback.patches:
+                    fallback.warnings.append(
+                        "会话为 Python 模式，但回答中没有可执行的 Python API 程序；已按 diff 格式解析"
+                    )
+                    result = fallback
+        else:
+            result = parse_answer(answer, root=Path(meta.get("root") or ""), known_paths=known)
         self.save_parsed(session_id, result)
         self.append_event(
             session_id,
             "parse",
             {
+                "mode": mode,
                 "patches": len(result.patches),
                 "warnings": len(result.warnings),
                 "answer_bytes": len(answer.encode("utf-8")),
@@ -477,14 +497,98 @@ class SessionStore:
                 child.unlink(missing_ok=True)
         parsed = {
             "version": 1,
+            "mode": result.mode or "diff",
             "parsed_at": utc_now(),
             "explanation": result.explanation,
             "commit_message": result.commit_message,
             "warnings": list(result.warnings),
             "patches": manifest_entries,
+            "script": result.script,
+            "script_result": result.script_result,
         }
         atomic_write_json(directory / "parsed.json", parsed)
         self.invalidate_mpatch(session_id)
+
+    def save_script_result(
+        self,
+        session_id: str,
+        result: ParseResult,
+        report: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a Python-mode run; patches are written by save_parsed."""
+        result.mode = "python"
+        result.script_result = report
+        self.save_parsed(session_id, result)
+        directory = ensure_dir(self.ensure_dir(session_id) / "script")
+        atomic_write_text(directory / "script.py", result.script)
+        atomic_write_json(directory / "report.json", report)
+        self.append_event(
+            session_id,
+            "script_run",
+            {
+                "status": report.get("status"),
+                "changes": len(result.patches),
+                "warnings": len(result.warnings),
+                "steps": len(report.get("steps") or []),
+            },
+        )
+        return report
+
+    def save_script_report(
+        self, session_id: str, script: str, report: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist a failed/timed-out run without replacing existing patches."""
+        directory = ensure_dir(self.ensure_dir(session_id) / "script")
+        atomic_write_text(directory / "script.py", script)
+        atomic_write_json(directory / "report.json", report)
+        parsed = self.get_parsed(session_id)
+        if parsed is None:
+            # The script API can be used with an explicit override before any
+            # answer has been parsed.  Persist a minimal parsed document so the
+            # script tab can still show the failure report.
+            parsed = {
+                "version": 1,
+                "parsed_at": utc_now(),
+                "explanation": "",
+                "commit_message": "",
+                "warnings": [],
+                "patches": [],
+            }
+        parsed["mode"] = "python"
+        parsed["script"] = script
+        parsed["script_result"] = report
+        self.write_json(session_id, "parsed.json", parsed)
+        self.append_event(
+            session_id,
+            "script_run",
+            {"status": report.get("status"), "patches_kept": True, "warnings": len(report.get("warnings") or [])},
+        )
+        return report
+
+    def get_script(self, session_id: str) -> dict[str, Any] | None:
+        parsed = self.get_parsed(session_id)
+        if parsed is None:
+            return None
+        mode = parsed.get("mode") or self.meta(session_id).get("mode") or "diff"
+        if mode != "python":
+            return None
+        report = self.read_json(session_id, "script/report.json")
+        source = ""
+        try:
+            source = self.read_text(session_id, "script/script.py")
+        except AppError as exc:
+            if exc.status != 404:
+                raise
+        if not source:
+            source = str(parsed.get("script") or "")
+        if report is None and not source:
+            return None
+        return {"source": source, "report": report}
+
+    def invalidate_script(self, session_id: str) -> None:
+        directory = self.session_dir(session_id) / "script"
+        if directory.is_dir():
+            shutil.rmtree(directory, ignore_errors=True)
 
     def get_parsed(self, session_id: str) -> dict[str, Any] | None:
         data = self.read_json(session_id, "parsed.json")
@@ -662,6 +766,7 @@ class SessionStore:
         parsed["patches"] = new_entries
         self.write_json(session_id, "parsed.json", parsed)
         self.invalidate_mpatch(session_id, patch_id)
+        self.invalidate_script(session_id)
         self.append_event(session_id, "edit", {"field": "patch", "patch_id": patch_id})
         entry = dict(entry)
         entry["content"] = self.get_patch(session_id, patch_id)["content"]
@@ -767,6 +872,7 @@ class SessionStore:
             self.write_json(session_id, "parsed.json", parsed)
         for entry in ordered:
             self.invalidate_mpatch(session_id, entry["id"])
+        self.invalidate_script(session_id)
         self.append_event(
             session_id,
             "merge",
@@ -866,6 +972,7 @@ class SessionStore:
             requirement=requirement,
             bundle_text=bundle,
             selection=selection,
+            mode=str(meta.get("mode") or "diff"),
             title=f"重新载入 - {meta.get('title') or session_id}",
             reloaded_from=session_id,
         )
@@ -876,6 +983,9 @@ class SessionStore:
                 explanation=parsed.get("explanation") or "",
                 commit_message=parsed.get("commit_message") or "",
                 warnings=list(parsed.get("warnings") or []),
+                mode=parsed.get("mode") or str(meta.get("mode") or "diff"),
+                script=parsed.get("script") or "",
+                script_result=parsed.get("script_result"),
             )
             for entry in self.get_patches(session_id):
                 result.patches.append(
@@ -1042,6 +1152,7 @@ class SessionStore:
             "selection": selection,
             "parsed": parsed,
             "patches": patches,
+            "script": self.get_script(session_id),
             "mpatch": self.mpatch_reports(session_id),
             "events": events,
             "has_any_apply": self.has_any_apply(session_id),

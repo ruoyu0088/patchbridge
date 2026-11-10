@@ -14,6 +14,12 @@ _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 _FENCE_RE = re.compile(r"^\s*```([^\s`]*)\s*$")
 _HUNK_RE = re.compile(r"^@@\s+-\d+", re.MULTILINE)
 _DIFF_START_RE = re.compile(r"^(diff --git |---\s+\S)")
+_SCRIPT_INFO = {"python", "py", "python3"}
+_SCRIPT_API_RE = re.compile(
+    r"\b(read_text|count|replace_text|replace_regex|insert_before|insert_after|"
+    r"replace_between|create_file|assert_count|assert_contains|assert_not_contains|"
+    r"assert_python_syntax)\s*\("
+)
 
 
 @dataclass
@@ -47,14 +53,23 @@ class ParseResult:
     commit_message: str = ""
     patches: list[ParsedPatch] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    mode: str = "diff"
+    script: str = ""
+    script_result: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
+            "mode": self.mode,
             "explanation": self.explanation,
             "commit_message": self.commit_message,
             "patches": [patch.to_dict() for patch in self.patches],
             "warnings": list(self.warnings),
         }
+        if self.script:
+            data["script"] = self.script
+        if self.script_result is not None:
+            data["script_result"] = self.script_result
+        return data
 
 
 @dataclass
@@ -416,6 +431,100 @@ def parse_answer(
         result.warnings.append("未能提取 patch；请检查回答格式或手工粘贴补丁")
 
     # Stable de-duplication while preserving order.
+    result.warnings = list(dict.fromkeys(result.warnings))
+    return result
+
+
+def _looks_like_diff(body: str) -> bool:
+    return (
+        "diff --git " in body
+        or (body.lstrip().startswith("--- ") and "\n+++ " in body)
+        or bool(_HUNK_RE.search(body))
+    )
+
+
+def parse_script_answer(
+    answer: str,
+    *,
+    root: Path | None = None,
+    known_paths: Iterable[str] = (),
+) -> ParseResult:
+    """Extract a Python patch script with the same tolerance as diff parsing."""
+    if not answer or not answer.strip():
+        raise AppError("answer_empty", "AI 回答为空")
+    normalized = answer.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    fenced, mask = _find_fences(lines)
+    headings = _find_headings(lines, mask)
+    result = ParseResult(mode="python")
+
+    candidates: list[_Block] = []
+    for block in fenced:
+        heading = _nearest_heading(headings, block.start)
+        if heading and heading[0] == "commit":
+            continue
+        if _looks_like_diff(block.body):
+            continue
+        if block.info.strip().lower().lstrip(".") in _SCRIPT_INFO:
+            candidates.append(block)
+        elif _SCRIPT_API_RE.search(block.body):
+            candidates.append(block)
+            result.warnings.append("Python 代码块缺少 python 语言标记，已按脚本解析")
+    if not candidates:
+        # Last resort: a plain python block whose heading mentions Python/脚本.
+        for block in fenced:
+            heading = _nearest_heading(headings, block.start)
+            if heading and heading[0] == "commit":
+                continue
+            if not _looks_like_diff(block.body) and (
+                (heading and any(word in heading[1] for word in ("python", "脚本", "script")))
+                or block.info.strip().lower().lstrip(".") in _SCRIPT_INFO
+            ):
+                candidates.append(block)
+
+    chosen: _Block | None = None
+    if candidates:
+        candidates.sort(key=lambda block: block.start)
+        chosen = candidates[0]
+        if len(candidates) > 1:
+            result.warnings.append("发现多个 Python 代码块，已采用第一个")
+        if not chosen.info.strip():
+            result.warnings.append("Python 代码块缺少语言标记")
+        result.script = chosen.body.strip("\n")
+    elif _SCRIPT_API_RE.search(normalized):
+        result.script = normalized.strip()
+        result.warnings.append("未找到 Python 代码块，已按整段回答作为脚本解析")
+
+    if not result.script:
+        result.warnings.append("没有从回答中提取到 Python 补丁脚本")
+    elif _HUNK_RE.search(result.script) or "diff --git " in result.script:
+        result.warnings.append("脚本中包含疑似 unified diff 的内容，请检查回答格式")
+
+    explanation = _section_text(lines, headings, "explanation")
+    if not explanation:
+        cutoff = chosen.start if chosen is not None else len(lines)
+        prose: list[str] = []
+        for index, line in enumerate(lines[:cutoff]):
+            if mask[index] or _HEADING_RE.match(line):
+                continue
+            prose.append(line)
+        explanation = "\n".join(prose).strip()
+    result.explanation = _clean_text(explanation)
+
+    commit = _section_text(lines, headings, "commit")
+    if not commit:
+        match = re.search(
+            r"(?im)^\s*(?:commit|提交)(?:\s*(?:建议|message|信息))?\s*[:：]\s*(.+)$",
+            normalized,
+        )
+        if match:
+            commit = match.group(1).strip()
+    result.commit_message = _clean_text(commit).strip()
+
+    if not result.explanation:
+        result.warnings.append("未找到修改说明")
+    if not result.commit_message:
+        result.warnings.append("未找到 commit 建议")
     result.warnings = list(dict.fromkeys(result.warnings))
     return result
 

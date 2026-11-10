@@ -60,6 +60,7 @@ def make_session(
     files: list[str] | None = None,
     requirement: str = "Make a change.",
     answer: str | None = None,
+    mode: str = "diff",
 ) -> str:
     selected = files or ["src/calculator.py"]
     bundle = build_bundle(
@@ -67,6 +68,7 @@ def make_session(
         requirement=requirement,
         selected_paths=selected,
         prompt_template="Return a unified diff.\n",
+        mode=mode,
     )
     session_id = store.create_session(
         project_id=profile.id,
@@ -76,6 +78,7 @@ def make_session(
         requirement=requirement,
         bundle_text=bundle.text,
         selection=bundle.selection,
+        mode=mode,
     )
     if answer is not None:
         store.save_answer(session_id, answer)
