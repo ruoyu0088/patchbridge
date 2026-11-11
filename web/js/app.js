@@ -872,6 +872,7 @@ const SessionPage = {
       scriptRunning: false,
       diffContext: 3,
       contextInitialized: false,
+      scriptScrollFrame: null,
     };
   },
   computed: {
@@ -968,6 +969,12 @@ const SessionPage = {
   },
   mounted() {
     this.load();
+  },
+  beforeUnmount() {
+    if (this.scriptScrollFrame) {
+      cancelAnimationFrame(this.scriptScrollFrame);
+      this.scriptScrollFrame = null;
+    }
   },
   watch: {
     sessionId() {
@@ -1410,11 +1417,55 @@ const SessionPage = {
       }
       const textarea = this.$refs.scriptEditor;
       if (!textarea) return;
-      textarea.focus();
+      // preventScroll keeps the browser from scrolling the page to the top of
+      // the textarea; we compute the real target line position ourselves.
+      textarea.focus({ preventScroll: true });
       textarea.setSelectionRange(offset, offset + (lines[target - 1] || '').length);
-      const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 20;
-      textarea.scrollTop = Math.max(0, (target - 1) * lineHeight - textarea.clientHeight / 3);
-      this.syncScriptGutter({ target: textarea });
+      if (this.scriptScrollFrame) cancelAnimationFrame(this.scriptScrollFrame);
+      this.scriptScrollFrame = requestAnimationFrame(() => {
+        this.scriptScrollFrame = null;
+        this.scrollScriptToLine(target);
+      });
+    },
+    scrollScriptToLine(target) {
+      const textarea = this.$refs.scriptEditor;
+      if (!textarea) return;
+      const gutter = this.$refs.scriptGutter;
+      const style = window.getComputedStyle(textarea);
+      const lineHeight = parseFloat(style.lineHeight) || 20;
+      const paddingTop = parseFloat(style.paddingTop) || 0;
+      const lineTop = paddingTop + (target - 1) * lineHeight;
+
+      // 1) Center the target line inside the textarea (if it scrolls).
+      const taMax = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+      const taTarget = Math.max(
+        0,
+        Math.min(lineTop - (textarea.clientHeight - lineHeight) / 2, taMax),
+      );
+      textarea.scrollTop = taTarget;
+
+      // 2) Keep the gutter rows aligned with the textarea rows.
+      if (gutter) {
+        const gutterMax = Math.max(0, gutter.scrollHeight - gutter.clientHeight);
+        const gutterTarget = Math.max(
+          0,
+          Math.min(lineTop - (gutter.clientHeight - lineHeight) / 2, gutterMax),
+        );
+        gutter.scrollTop = gutterTarget;
+      }
+
+      // 3) Scroll the whole page so the target line is near the viewport center.
+      const rect = textarea.getBoundingClientRect();
+      const lineDocTop = rect.top + window.scrollY + lineTop - textarea.scrollTop;
+      const desired = lineDocTop - window.innerHeight / 2 + lineHeight / 2;
+      const maxPage = Math.max(
+        0,
+        document.documentElement.scrollHeight - window.innerHeight,
+      );
+      const pageTarget = Math.max(0, Math.min(desired, maxPage));
+      if (Math.abs(pageTarget - window.scrollY) > 2) {
+        window.scrollTo({ top: pageTarget, behavior: 'smooth' });
+      }
     },
     async submitAnswer() {
       if (!this.answerDraft.trim()) {
@@ -2018,7 +2069,7 @@ const SessionPage = {
           </p>
           <div class="script-editor-wrap">
             <div ref="scriptGutter" class="script-gutter" aria-hidden="true">
-              <div v-for="line in scriptLineNumbers" :key="line">{{ line }}</div>
+              <div v-for="line in scriptLineNumbers" :key="line" :id="'script-line-' + line">{{ line }}</div>
             </div>
             <textarea
               ref="scriptEditor"
