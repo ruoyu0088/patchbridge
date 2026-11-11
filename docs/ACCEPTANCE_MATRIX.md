@@ -35,6 +35,8 @@
 | 31 | Python 会话导出文档包含回答格式与脚本 | `tests/test_scripting.py::test_export_markdown_contains_python_script` |
 | 32 | 顺序 API 修改能看到前一步结果 | `tests/test_scripting.py::test_sequential_edits_see_previous_changes` |
 | 33 | Python 补丁保持原文件“无末尾换行” | `tests/test_scripting.py::test_no_final_newline_is_preserved` |
+| 34 | 脚本步骤/异常记录 AI 脚本行号 | `tests/test_scripting.py::test_script_steps_and_runtime_errors_carry_source_lines`、`test_syntax_error_reports_line` |
+| 35 | 无 `#` 的 Commit/Python 标题仍能正确分节 | `tests/test_parsing.py::test_plain_headings_without_hash_are_recognized` |
 
 ## 其他覆盖
 
@@ -53,12 +55,13 @@
 2. 新建 profile，打开文件树，搜索/勾选目录。
 3. 输入需求并打包，分别验证“复制完整文本”和“复制文件路径”。
 4. 以 Python 模式打包，粘贴含 `replace_text` + `assert_count` 的回答；确认自动执行、生成补丁，
-   “Python 脚本”页显示步骤/OK，审阅页显示左右并排 diff。
-5. 修改脚本使 `expected` 不符，确认按实际匹配应用、出现 warning、仍能生成补丁。
-6. 粘贴 diff 回答（Python 会话），确认回退为 diff 解析并给出 warning。
-7. 构造上下文轻微漂移的补丁：dry-run 后应显示 `mpatch 模糊`，derived diff 正确；再构造
+   “Python 脚本”页显示行号、步骤/OK，点击步骤或错误行号能跳到脚本对应行；审阅页显示左右并排 diff。
+5. 粘贴一份 `Commit 建议`、`Python 补丁脚本` 前不带 `#` 的回答，确认 commit 与脚本分别识别。
+6. 修改脚本使 `expected` 不符，确认按实际匹配应用、出现 warning、仍能生成补丁。
+7. 粘贴 diff 回答（Python 会话），确认回退为 diff 解析并给出 warning。
+8. 构造上下文轻微漂移的补丁：dry-run 后应显示 `mpatch 模糊`，derived diff 正确；再构造
    严重不匹配的补丁：应显示 `mpatch 未命中`/`待 AI 修正`，能复制修正请求。
-8. 勾选部分文件应用，确认备份和事件。
-9. 撤回，确认文件恢复。
-10. 归档会话，刷新历史列表，打开详情并重新载入。
-11. 在设置中修改大文件阈值/自动归档开关/Python 提示词与超时/mpatch 路径并刷新。
+9. 勾选部分文件应用，确认备份和事件。
+10. 撤回，确认文件恢复。
+11. 归档会话，刷新历史列表，打开详情并重新载入。
+12. 在设置中修改大文件阈值/自动归档开关/Python 提示词与超时/mpatch 路径并刷新。

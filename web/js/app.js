@@ -947,6 +947,10 @@ const SessionPage = {
         ''
       );
     },
+    scriptLineNumbers() {
+      const count = this.scriptText ? this.scriptText.split('\n').length : 1;
+      return Array.from({ length: count }, (_, index) => index + 1);
+    },
     duplicateGroups() {
       const pending = this.patches.filter((patch) => !this.appliedPatchIds.has(patch.id));
       const map = new Map();
@@ -1391,6 +1395,26 @@ const SessionPage = {
     async copyScript() {
       if (!this.scriptText) return;
       await copyText(this.scriptText, 'Python 脚本');
+    },
+    syncScriptGutter(event) {
+      const gutter = this.$refs.scriptGutter;
+      if (gutter && event && event.target) gutter.scrollTop = event.target.scrollTop;
+    },
+    jumpToScriptLine(line) {
+      const total = this.scriptLineNumbers.length;
+      const target = Math.max(1, Math.min(Number(line) || 1, total));
+      const lines = this.scriptText.split('\n');
+      let offset = 0;
+      for (let index = 0; index < target - 1; index += 1) {
+        offset += lines[index].length + 1;
+      }
+      const textarea = this.$refs.scriptEditor;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset + (lines[target - 1] || '').length);
+      const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 20;
+      textarea.scrollTop = Math.max(0, (target - 1) * lineHeight - textarea.clientHeight / 3);
+      this.syncScriptGutter({ target: textarea });
     },
     async submitAnswer() {
       if (!this.answerDraft.trim()) {
@@ -1992,12 +2016,20 @@ const SessionPage = {
           <p class="muted">
             脚本只会修改内存中的工作区；执行成功或部分成功后才会生成补丁。真实文件在“应用选中补丁”之前不会改变。
           </p>
-          <textarea
-            v-model="scriptText"
-            class="code-editor script-editor"
-            spellcheck="false"
-            placeholder="AI 输出的 Python 补丁脚本…"
-          ></textarea>
+          <div class="script-editor-wrap">
+            <div ref="scriptGutter" class="script-gutter" aria-hidden="true">
+              <div v-for="line in scriptLineNumbers" :key="line">{{ line }}</div>
+            </div>
+            <textarea
+              ref="scriptEditor"
+              v-model="scriptText"
+              class="code-editor script-editor"
+              spellcheck="false"
+              wrap="off"
+              placeholder="AI 输出的 Python 补丁脚本…"
+              @scroll="syncScriptGutter"
+            ></textarea>
+          </div>
           <div v-if="patchLocked" class="alert info">会话已应用补丁，脚本已锁定；如需再改请“重新载入”。</div>
 
           <div v-if="scriptReport" class="script-report">
@@ -2006,6 +2038,12 @@ const SessionPage = {
                 {{ scriptReport.status }}
               </span>
               <span class="muted">{{ scriptReport.reason || scriptReport.error || '' }}</span>
+              <button
+                v-if="scriptReport.error_line"
+                class="line-link"
+                type="button"
+                @click="jumpToScriptLine(scriptReport.error_line)"
+              >第 {{ scriptReport.error_line }} 行</button>
               <span class="muted mono">{{ scriptReport.elapsed_ms }} ms</span>
             </div>
             <div v-if="scriptReport.warnings && scriptReport.warnings.length" class="alert warning small">
@@ -2022,6 +2060,9 @@ const SessionPage = {
                 <span class="mono">#{{ step.index }} {{ step.api }}</span>
                 <code>{{ step.path }}</code>
                 <span class="muted">{{ step.message }}</span>
+                <button v-if="step.line" class="line-link" type="button" @click="jumpToScriptLine(step.line)">
+                  第 {{ step.line }} 行
+                </button>
               </div>
             </details>
           </div>

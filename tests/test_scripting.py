@@ -226,3 +226,41 @@ replace_text("a.py", "x", "y", expected=1)
     parsed = parse_script_answer(answer, root=Path("."))
     assert "replace_text" in parsed.script
     assert any("语言标记" in warning for warning in parsed.warnings)
+
+
+def test_script_steps_and_runtime_errors_carry_source_lines(
+    project_root: Path, profile, store: SessionStore, config: AppConfig
+):
+    answer = """## Python 补丁脚本
+```python
+replace_text(
+    "src/calculator.py",
+    "    return left + right\\n",
+    "    return left + right  # line link\\n",
+    expected=1,
+)
+raise ValueError("boom")
+```
+"""
+    session_id = _session(store, profile, answer=answer)
+    result = run_session_script(store, config, session_id)
+    report = result["report"]
+    assert report["status"] == "partial"
+    assert report["steps"], report
+    assert report["steps"][0]["line"] >= 1
+    assert report["error_line"] == 7, report
+    assert "boom" in report["error"]
+
+
+def test_syntax_error_reports_line(
+    project_root: Path, profile, store: SessionStore, config: AppConfig
+):
+    session_id = _session(store, profile, answer=PY_ANSWER)
+    result = run_session_script(
+        store,
+        config,
+        session_id,
+        script_override="x = 1\nif True print(x)\n",
+    )
+    assert result["report"]["status"] == "invalid"
+    assert result["report"]["error_line"] == 2

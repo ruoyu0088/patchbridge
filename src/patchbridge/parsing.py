@@ -93,6 +93,8 @@ def _classify_heading(text: str) -> str | None:
         for word in ("修改说明", "变更说明", "说明", "summary", "explanation", "overview", "摘要")
     ):
         return "explanation"
+    if any(word in cleaned for word in ("python", "脚本", "script")):
+        return "script"
     if any(word in cleaned for word in ("补丁", "patch", "diff", "文件修改", "代码修改")):
         return "patch"
     return None
@@ -118,12 +120,23 @@ _PLAIN_HEADINGS = {
     "说明": "explanation",
     "commit": "commit",
     "commit建议": "commit",
+    "commitmessage": "commit",
     "提交": "commit",
     "提交建议": "commit",
+    "提交信息": "commit",
+    "提交说明": "commit",
+    "python补丁脚本": "script",
+    "python脚本": "script",
+    "python代码": "script",
+    "补丁脚本": "script",
+    "脚本": "script",
+    "script": "script",
     "补丁": "patch",
     "文件补丁": "patch",
     "代码修改": "patch",
     "文件修改": "patch",
+    "改动说明": "explanation",
+    "变更内容": "explanation",
     "patch": "patch",
     "diff": "patch",
     "summary": "explanation",
@@ -219,6 +232,31 @@ def _section_text(
         body = "\n".join(lines[index + 1 : end]).strip()
         return body
     return ""
+
+
+def _prose_before(
+    lines: list[str],
+    mask: list[bool],
+    headings: list[tuple[int, str, str]],
+    cutoff: int,
+) -> str:
+    """Collect free prose before the first section heading (or cutoff)."""
+    section_start = cutoff
+    for index, kind, _ in headings:
+        if index >= cutoff:
+            break
+        if kind in {"commit", "patch", "script"}:
+            section_start = index
+            break
+    prose: list[str] = []
+    for index in range(max(0, section_start)):
+        if mask[index]:
+            continue
+        line = lines[index]
+        if _HEADING_RE.match(line):
+            continue
+        prose.append(line)
+    return "\n".join(prose).strip()
 
 
 def _unfenced_diff_blocks(
@@ -399,14 +437,7 @@ def parse_answer(
         first_patch_line = min(
             (block.start for block in patch_blocks), default=len(lines)
         )
-        prose: list[str] = []
-        for index, line in enumerate(lines[:first_patch_line]):
-            if mask[index]:
-                continue
-            if _HEADING_RE.match(line):
-                continue
-            prose.append(line)
-        explanation = "\n".join(prose).strip()
+        explanation = _prose_before(lines, mask, headings, first_patch_line)
     result.explanation = _clean_text(explanation)
 
     commit = _section_text(lines, headings, "commit")
@@ -417,6 +448,14 @@ def parse_answer(
     if not commit:
         match = re.search(
             r"(?im)^\s*(?:commit|提交)(?:\s*(?:建议|message|信息))?\s*[:：]\s*(.+)$",
+            normalized,
+        )
+        if match:
+            commit = match.group(1).strip()
+    if not commit:
+        # Heading-only line, e.g. "Commit 建议" with no colon, followed by text.
+        match = re.search(
+            r"(?im)^\s*(?:commit|提交)(?:\s*(?:建议|message|信息|说明))?\s*[:：]?\s*$\n+\s*([^\n]+)",
             normalized,
         )
         if match:
@@ -503,18 +542,21 @@ def parse_script_answer(
     explanation = _section_text(lines, headings, "explanation")
     if not explanation:
         cutoff = chosen.start if chosen is not None else len(lines)
-        prose: list[str] = []
-        for index, line in enumerate(lines[:cutoff]):
-            if mask[index] or _HEADING_RE.match(line):
-                continue
-            prose.append(line)
-        explanation = "\n".join(prose).strip()
+        explanation = _prose_before(lines, mask, headings, cutoff)
     result.explanation = _clean_text(explanation)
 
     commit = _section_text(lines, headings, "commit")
     if not commit:
         match = re.search(
             r"(?im)^\s*(?:commit|提交)(?:\s*(?:建议|message|信息))?\s*[:：]\s*(.+)$",
+            normalized,
+        )
+        if match:
+            commit = match.group(1).strip()
+    if not commit:
+        # Heading-only line, e.g. "Commit 建议" with no colon, followed by text.
+        match = re.search(
+            r"(?im)^\s*(?:commit|提交)(?:\s*(?:建议|message|信息|说明))?\s*[:：]?\s*$\n+\s*([^\n]+)",
             normalized,
         )
         if match:

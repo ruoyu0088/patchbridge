@@ -165,7 +165,7 @@ diff 模式内置提示词要求：
 Python 模式解析器提取第一个 Python 代码块；没有代码块时，兼容旧回答按 diff 解析并给出 warning。
 diff 模式解析器容错：
 
-- 中英文标题、关键词、缺少标题都尽量识别。
+- 中英文标题、关键词、缺少标题都尽量识别；`Commit 建议`、`Python 补丁脚本` 等标题可以不带 Markdown `#`。
 - 代码块有无语言标记都可。
 - 无代码围栏时扫描 `diff --git` / `---`/`+++` / `@@`。
 - 路径支持 `a/`、`b/`、绝对路径、反斜杠、标题路径。
@@ -305,7 +305,8 @@ AI 不再输出 diff，而是输出一段只调用 PatchBridge 补丁 API 的 Py
 
 - 会话 `meta.json`/`selection.json` 记录 `mode`；`script/script.py` 保存最后执行的脚本，
   `script/report.json` 保存执行报告；补丁仍存 `patches/`。
-- 审阅页提供“Python 脚本”标签，可编辑并重新执行；粘贴回答时自动执行一次。
+- 审阅页提供“Python 脚本”标签，可编辑并重新执行；粘贴回答时自动执行一次。编辑器带行号，
+  `ScriptStep.line`/`ScriptResult.error_line` 记录 API 调用和异常所在的 AI 脚本行，前端可点击跳转。
 - diff 预览由 `diff_view.build_diff_rows` 生成左右并排行，按上下文行数裁剪；原始 unified diff
   保留在折叠区。
 - 归档 zip 内结构相同，读取脚本/报告按 member 流式读取。

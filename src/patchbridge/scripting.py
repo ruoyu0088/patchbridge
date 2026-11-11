@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import builtins
 import difflib
+import inspect
 import io
 import re
 import sys
@@ -28,6 +29,8 @@ from .fsutil import (
 )
 from .parsing import ParseResult, ParsedPatch
 from .profiles import Profile
+
+SCRIPT_FILENAME = "<patchbridge-ai>"
 
 ALLOWED_IMPORTS = {
     "re",
@@ -132,6 +135,7 @@ class ScriptStep:
     message: str = ""
     expected: int | None = None
     matched: int | None = None
+    line: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +146,7 @@ class ScriptStep:
             "message": self.message,
             "expected": self.expected,
             "matched": self.matched,
+            "line": self.line,
         }
 
 
@@ -181,6 +186,7 @@ class ScriptResult:
     error: str = ""
     changes: list[dict[str, Any]] = field(default_factory=list)
     elapsed_ms: int = 0
+    error_line: int = 0
     script: str = ""
     patches: list[ParsedPatch] = field(default_factory=list)
 
@@ -192,6 +198,7 @@ class ScriptResult:
             "steps": [step.to_dict() for step in self.steps],
             "stdout": self.stdout,
             "error": self.error,
+            "error_line": self.error_line,
             "changes": list(self.changes),
             "elapsed_ms": self.elapsed_ms,
         }
@@ -276,6 +283,16 @@ class Workspace:
             raise ScriptApiError(f"文件不存在：{rel}", code="script_file_missing")
         return item
 
+    @staticmethod
+    def _caller_line() -> int:
+        """Return the line in the AI script that called the current API."""
+        frame = inspect.currentframe()
+        while frame is not None:
+            if frame.f_code.co_filename == SCRIPT_FILENAME:
+                return int(frame.f_lineno)
+            frame = frame.f_back
+        return 0
+
     def _record(
         self,
         api: str,
@@ -295,6 +312,7 @@ class Workspace:
                 message=message,
                 expected=expected,
                 matched=matched,
+                line=self._caller_line(),
             )
         )
         if status == "warning":
@@ -563,6 +581,7 @@ class Workspace:
             "error": "",
             "stdout": "",
             "elapsed_ms": 0,
+            "line": 0,
         }
 
         def _print(*args: Any, sep: str = " ", end: str = "\n", file: Any = None, flush: bool = False) -> None:
@@ -601,6 +620,8 @@ class Workspace:
             env[name] = getattr(self, name)
 
         def trace(frame: Any, event: str, arg: Any) -> Any:
+            if frame.f_code.co_filename == SCRIPT_FILENAME:
+                state["line"] = int(frame.f_lineno)
             if time.monotonic() > deadline:
                 raise ScriptTimeout("脚本执行超时")
             return trace
@@ -616,6 +637,7 @@ class Workspace:
             except BaseException as exc:
                 state["status"] = "partial"
                 state["error"] = f"{type(exc).__name__}: {exc}"
+                state["line"] = _exception_line(exc)
                 state["traceback"] = traceback.format_exc(limit=8)
             finally:
                 sys.settrace(None)
@@ -632,6 +654,16 @@ class Workspace:
         if state["status"] == "timeout":
             self.discarded = True
         return state
+
+
+def _exception_line(exc: BaseException) -> int:
+    line = 0
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename == SCRIPT_FILENAME:
+            line = int(tb.tb_lineno)
+        tb = tb.tb_next
+    return line
 
 
 def _normalize_newlines(text: str) -> str:
@@ -752,9 +784,10 @@ def run_session_script(
 
     result = ScriptResult(status="ok", script=script)
     try:
-        code = compile(script, "<patchbridge-ai>", "exec")
+        code = compile(script, SCRIPT_FILENAME, "exec")
     except SyntaxError as exc:
         result.status = "invalid"
+        result.error_line = int(exc.lineno or 0)
         result.reason = f"脚本语法错误：第 {exc.lineno} 行：{exc.msg}"
         report = result.to_dict()
         store.save_script_report(session_id, script, report)
@@ -774,6 +807,7 @@ def run_session_script(
     result.warnings = list(dict.fromkeys(workspace.warnings))
     result.status = str(state.get("status") or "ok")
     result.error = str(state.get("error") or "")
+    result.error_line = int(state.get("line") or 0)
     if result.status == "timeout":
         result.reason = result.error
         report = result.to_dict()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from patchbridge.parsing import parse_answer
+from patchbridge.parsing import parse_answer, parse_script_answer
 
 
 NORMAL = """## 修改说明
@@ -196,3 +196,31 @@ diff --git a/../../etc/passwd b/../../etc/passwd
     result = parse_answer(answer, root=project_root, known_paths=[])
     assert result.patches == []
     assert result.warnings
+
+
+def test_plain_headings_without_hash_are_recognized(project_root: Path):
+    answer = """这次把返回值改大一点。
+
+Commit 建议
+fix(calculator): increase add result
+
+Python 补丁脚本
+```python
+replace_text(
+    "src/calculator.py",
+    "    return left + right\\n",
+    "    return left + right + 1\\n",
+    expected=1,
+)
+```
+"""
+    result = parse_script_answer(
+        answer,
+        root=project_root,
+        known_paths=["src/calculator.py"],
+    )
+    assert result.mode == "python"
+    assert result.explanation == "这次把返回值改大一点。"
+    assert result.commit_message == "fix(calculator): increase add result"
+    assert result.script.startswith("replace_text(")
+    assert "未找到" not in " ".join(result.warnings)
