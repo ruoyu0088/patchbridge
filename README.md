@@ -1,8 +1,12 @@
 # PatchBridge
 
-Turn manually copied Web AI answers into reviewed, backed-up, reversible code patches.
-
 **English** | [中文](#中文)
+
+![Home](docs/PatchBridge_home.png)
+![Profile](docs/PatchBridge_profile.png)
+![patchview](docs/PatchBridge_patchview.png)
+
+Turn manually copied Web AI answers into reviewed, backed-up, reversible code patches.
 
 PatchBridge is a **local** tool. It calls no model API and performs no browser automation.
 You copy text between PatchBridge and a Web AI; PatchBridge collects context, bundles it,
