@@ -12,9 +12,9 @@ from patchbridge.scanner import scan_project
 
 def test_profile_comments_and_negation(tmp_path: Path):
     profile = parse_profile_text(
-        """# comment
+        f"""# comment
 name: Example
-root: C:\\work\\example
+root: {tmp_path}
 mode: exclude
 
 [rules]
@@ -32,8 +32,8 @@ dist/
 
 def test_include_mode_whitelist(tmp_path: Path):
     profile = parse_profile_text(
-        """name: Example
-root: C:\\work\\example
+        f"""name: Example
+root: {tmp_path}
 mode: include
 
 [rules]
