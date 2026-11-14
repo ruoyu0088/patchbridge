@@ -6,13 +6,13 @@ title PatchBridge
 set "PYEXE="
 where python >nul 2>nul
 if not errorlevel 1 (
-  python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+  call python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
   if not errorlevel 1 set "PYEXE=python"
 )
 if not defined PYEXE (
   where py >nul 2>nul
   if not errorlevel 1 (
-    py -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+    call py -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
     if not errorlevel 1 set "PYEXE=py"
   )
 )
@@ -25,5 +25,5 @@ if not defined PYEXE (
 
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-%PYEXE% start.py --open
+call %PYEXE% start.py --open
 if errorlevel 1 pause
