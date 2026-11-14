@@ -71,11 +71,19 @@ class AppConfig:
 
     @property
     def default_prompt_path(self) -> Path:
-        return Path(__file__).resolve().parent / "prompts" / "default.md"
+        return self.default_prompt_path_for("zh", "diff")
 
     @property
     def default_python_prompt_path(self) -> Path:
-        return Path(__file__).resolve().parent / "prompts" / "python.md"
+        return self.default_prompt_path_for("zh", "python")
+
+    def default_prompt_path_for(self, lang: str = "zh", mode: str = "diff") -> Path:
+        prompts = Path(__file__).resolve().parent / "prompts"
+        if mode == "python":
+            name = "python_en.md" if str(lang).lower().startswith("en") else "python.md"
+        else:
+            name = "default_en.md" if str(lang).lower().startswith("en") else "default.md"
+        return prompts / name
 
     def ensure_dirs(self) -> None:
         for path in (
@@ -135,17 +143,20 @@ class AppConfig:
         return merged
 
     def resolve_prompt_path(
-        self, settings: dict[str, Any] | None = None, mode: str = "diff"
+        self,
+        settings: dict[str, Any] | None = None,
+        mode: str = "diff",
+        lang: str = "zh",
     ) -> Path:
         settings = settings or self.load_settings()
         if mode == "python":
             configured = str(settings.get("python_prompt_template_path") or "").strip()
             if not configured:
-                return self.default_python_prompt_path
+                return self.default_prompt_path_for(lang, "python")
         else:
             configured = str(settings.get("prompt_template_path") or "").strip()
             if not configured:
-                return self.default_prompt_path
+                return self.default_prompt_path_for(lang, "diff")
         path = Path(os.path.expanduser(configured))
         if not path.is_absolute():
             path = self.project_root / path

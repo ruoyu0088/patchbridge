@@ -1,3 +1,5 @@
+import { getLocale, t } from './i18n.js';
+
 export class ApiError extends Error {
   constructor(code, message, details, status) {
     super(message);
@@ -9,7 +11,11 @@ export class ApiError extends Error {
 }
 
 async function request(path, options = {}) {
-  const init = { ...options, headers: { ...(options.headers || {}) } };
+  const init = {
+    ...options,
+    // 每个请求都带上当前语言，后端据此本地化错误信息、诊断文本和提示词。
+    headers: { 'Accept-Language': getLocale(), ...(options.headers || {}) },
+  };
   if (init.body && typeof init.body !== 'string') {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(init.body);
@@ -18,7 +24,7 @@ async function request(path, options = {}) {
   try {
     response = await fetch(path, init);
   } catch (err) {
-    throw new ApiError('network_error', '无法连接 PatchBridge 后端', null, 0);
+    throw new ApiError('network_error', t('无法连接 PatchBridge 后端'), null, 0);
   }
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
@@ -33,7 +39,7 @@ async function request(path, options = {}) {
     const error = payload.error || {};
     throw new ApiError(
       error.code || 'api_error',
-      error.message || '请求失败',
+      error.message || t('请求失败'),
       error.details || null,
       response.status,
     );

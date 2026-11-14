@@ -25,15 +25,15 @@ def _free_port(host: str, preferred: int) -> int:
                 return port
             except OSError:
                 continue
-    raise SystemExit(f"无法在 {host} 上找到可用端口（从 {preferred} 开始）")
+    raise SystemExit(f"No free port available on {host} (starting at {preferred})")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="patchbridge", description="PatchBridge local server")
-    parser.add_argument("--data-dir", default=None, help="数据目录，默认 ./data")
+    parser.add_argument("--data-dir", default=None, help="data directory, defaults to ./data")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
+    parser.add_argument("--open", action="store_true", help="open the browser after starting")
     args = parser.parse_args(argv)
 
     config = load_config(args.data_dir)
@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> None:
 
         threading.Thread(target=open_later, daemon=True).start()
     print(f"PatchBridge: {url}")
-    print(f"数据目录: {Path(config.data_dir)}")
+    print(f"Data directory: {Path(config.data_dir)}")
     app = create_app(config)
     uvicorn.run(app, host=args.host, port=port, log_level="info")
 

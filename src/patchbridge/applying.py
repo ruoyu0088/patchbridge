@@ -19,6 +19,7 @@ from .diff_engine import (
     parse_unified_diff,
 )
 from .errors import AppError
+from .i18n import tr
 from .fsutil import (
     atomic_write_bytes,
     atomic_write_json,
@@ -85,17 +86,29 @@ class Evaluation:
             "hash_status": self.hash_status,
             "scope_status": self.scope_status,
             "apply_status": self.apply_status,
-            "reason": self.reason,
-            "warnings": list(self.warnings or []),
+            "reason": tr(self.reason),
+            "warnings": [tr(item) for item in (self.warnings or [])],
             "current_sha256": self.current_sha256,
             "after_sha256": self.after_sha256,
-            "diagnostics": self.diagnostics,
+            "diagnostics": _localize_structure(self.diagnostics),
             "engine": self.engine,
-            "mpatch": self.mpatch,
+            "mpatch": _localize_structure(self.mpatch),
             "final_patch": self.final_patch,
             "repair": self.repair,
             "diff_rows": diff_rows,
         }
+
+
+def _localize_structure(value: Any) -> Any:
+    if isinstance(value, str):
+        return tr(value)
+    if isinstance(value, list):
+        return [_localize_structure(item) for item in value]
+    if isinstance(value, tuple):
+        return [_localize_structure(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _localize_structure(item) for key, item in value.items()}
+    return value
 
 
 def _profile_for(meta: dict[str, Any]) -> Profile:

@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from .diff_engine import FilePatch, canonical_patch, parse_unified_diff
 from .errors import AppError
+from .i18n import tr
 from .fsutil import normalize_rel_path
 from .diff_engine import resolve_patch_path
 
@@ -42,8 +43,8 @@ class ParsedPatch:
             "removed": self.removed,
             "new_file": self.new_file,
             "p_level": self.p_level,
-            "warnings": list(self.warnings),
-            "unsupported": self.unsupported,
+            "warnings": [tr(item) for item in self.warnings],
+            "unsupported": tr(self.unsupported) if self.unsupported else None,
         }
 
 
@@ -63,7 +64,7 @@ class ParseResult:
             "explanation": self.explanation,
             "commit_message": self.commit_message,
             "patches": [patch.to_dict() for patch in self.patches],
-            "warnings": list(self.warnings),
+            "warnings": [tr(item) for item in self.warnings],
         }
         if self.script:
             data["script"] = self.script

@@ -4,6 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>PatchBridge</title>
+    <script>
+      // 在首屏渲染前就应用语言，避免 <html lang> / 标题先闪一下默认语言。
+      try {
+        if (localStorage.getItem('patchbridge.locale') === 'en') {
+          document.documentElement.setAttribute('lang', 'en');
+          document.title = 'PatchBridge — safe patches from Web AI';
+        }
+      } catch (err) {
+        /* localStorage 不可用时保持默认中文 */
+      }
+    </script>
     <link rel="stylesheet" href="/static/css/app.css" />
   </head>
   <body>

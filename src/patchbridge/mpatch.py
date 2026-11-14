@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
+from .i18n import get_language, tr
 from .fsutil import (
     decode_text_file,
     ensure_dir,
@@ -46,7 +47,7 @@ class MpatchOutcome:
     def as_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
-            "reason": self.reason,
+            "reason": tr(self.reason),
             "path": self.path,
             "version": self.version,
             "dry_run_rc": self.dry_run_rc,
@@ -54,8 +55,20 @@ class MpatchOutcome:
             "elapsed_ms": self.elapsed_ms,
             "stdout": self.stdout,
             "stderr": self.stderr,
-            "diagnostics": self.diagnostics,
+            "diagnostics": _localize_structure(self.diagnostics),
         }
+
+
+def _localize_structure(value: Any) -> Any:
+    if isinstance(value, str):
+        return tr(value)
+    if isinstance(value, list):
+        return [_localize_structure(item) for item in value]
+    if isinstance(value, tuple):
+        return [_localize_structure(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _localize_structure(item) for key, item in value.items()}
+    return value
 
 
 def _clip(value: str, limit: int = 20000) -> str:
@@ -486,6 +499,7 @@ def build_repair_request(
     settings = settings or {}
     full_limit = int(settings.get("mpatch_repair_full_file_bytes") or 16384)
     context_lines = int(settings.get("mpatch_repair_context_lines") or 30)
+    english = get_language() == "en"
     text = ""
     if current:
         try:
@@ -493,37 +507,90 @@ def build_repair_request(
         except Exception:
             text = ""
     if text and len(current or b"") <= full_limit:
-        file_block = "下面是当前文件完整内容（不含行号）：\n```text\n" + _normalize_copy_text(text) + "\n```"
+        if english:
+            file_block = "Full current file (without line numbers):\n```text\n" + _normalize_copy_text(text) + "\n```"
+        else:
+            file_block = "下面是当前文件完整内容（不含行号）：\n```text\n" + _normalize_copy_text(text) + "\n```"
     elif text:
         line = (outcome.diagnostics or {}).get("line") if outcome else None
-        file_block = (
-            f"当前文件较大，只附上失败 hunk 附近约 ±{context_lines} 行（行号仅用于定位，不属于文件内容）：\n"
-            "```text\n"
-            + _numbered_excerpt(text, line if isinstance(line, int) else None, context_lines, context_lines)
-            + "\n```"
-        )
+        if english:
+            file_block = (
+                f"The file is large; only about ±{context_lines} lines around the failing hunk are included "
+                "(line numbers are for locating, not file content):\n"
+                "```text\n"
+                + _numbered_excerpt(text, line if isinstance(line, int) else None, context_lines, context_lines)
+                + "\n```"
+            )
+        else:
+            file_block = (
+                f"当前文件较大，只附上失败 hunk 附近约 ±{context_lines} 行（行号仅用于定位，不属于文件内容）：\n"
+                "```text\n"
+                + _numbered_excerpt(text, line if isinstance(line, int) else None, context_lines, context_lines)
+                + "\n```"
+            )
     else:
-        file_block = "当前文件不是可解码文本，无法附上内容。"
+        file_block = (
+            "The current file is not decodable text; its content cannot be attached."
+            if english
+            else "当前文件不是可解码文本，无法附上内容。"
+        )
 
     diag = ""
     if outcome is not None:
         diagnostic = outcome.diagnostics or {}
-        bits = [outcome.reason or outcome.status]
-        if diagnostic.get("hunk"):
-            bits.append(f"失败 hunk：{diagnostic['hunk']}")
-        if diagnostic.get("line"):
-            bits.append(f"最佳匹配行：{diagnostic['line']}")
-        if diagnostic.get("similarity") is not None:
-            bits.append(f"相似度：{float(diagnostic['similarity']) * 100:.1f}%")
-        if diagnostic.get("threshold") is not None:
-            bits.append(f"阈值：{float(diagnostic['threshold']) * 100:.0f}%")
-        if diagnostic.get("candidates"):
-            bits.append(f"候选位置：{diagnostic['candidates']}")
-        diag = "；".join(bits)
+        bits = [tr(outcome.reason or outcome.status)]
+        if english:
+            if diagnostic.get("hunk"):
+                bits.append(f"failed hunk: {diagnostic['hunk']}")
+            if diagnostic.get("line"):
+                bits.append(f"best match line: {diagnostic['line']}")
+            if diagnostic.get("similarity") is not None:
+                bits.append(f"similarity: {float(diagnostic['similarity']) * 100:.1f}%")
+            if diagnostic.get("threshold") is not None:
+                bits.append(f"threshold: {float(diagnostic['threshold']) * 100:.0f}%")
+            if diagnostic.get("candidates"):
+                bits.append(f"candidates: {diagnostic['candidates']}")
+            diag = "; ".join(bits)
+        else:
+            if diagnostic.get("hunk"):
+                bits.append(f"失败 hunk：{diagnostic['hunk']}")
+            if diagnostic.get("line"):
+                bits.append(f"最佳匹配行：{diagnostic['line']}")
+            if diagnostic.get("similarity") is not None:
+                bits.append(f"相似度：{float(diagnostic['similarity']) * 100:.1f}%")
+            if diagnostic.get("threshold") is not None:
+                bits.append(f"阈值：{float(diagnostic['threshold']) * 100:.0f}%")
+            if diagnostic.get("candidates"):
+                bits.append(f"候选位置：{diagnostic['candidates']}")
+            diag = "；".join(bits)
     else:
-        diag = strict_reason or "严格匹配失败"
+        diag = strict_reason or ("Strict matching failed" if english else "严格匹配失败")
     requirement = str(meta.get("requirement") or "").strip()
     original = str(entry.get("content") or "").strip()
+    if english:
+        return f"""# Patch repair request
+
+Project: {meta.get('project_name') or ''}
+File: {path}
+Original requirement:
+{requirement or '(not recorded)'}
+
+Strict-match failure: {strict_reason or 'Context mismatch'}
+mpatch diagnostics: {diag}
+
+{file_block}
+
+Original patch (reference only; do not copy its incorrect context):
+```diff
+{original}
+```
+
+Please regenerate the unified diff for this file and satisfy:
+1. Context lines must match the current file character for character, especially leading spaces and tabs.
+2. Change only lines related to the requirement; do not reorder or reformat unrelated code.
+3. Use a/{path} and b/{path} in the file headers.
+4. Output only one diff code block; do not include explanations or other files.
+"""
     return f"""# 补丁修正请求
 
 工程：{meta.get('project_name') or ''}

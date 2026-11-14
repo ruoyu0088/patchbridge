@@ -1,0 +1,4 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pathspec>=0.12
+charset-normalizer>=3.0

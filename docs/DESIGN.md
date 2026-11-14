@@ -30,8 +30,8 @@ PatchBridge 解决的是“代码量大时，让 Web 版 AI 改几行代码”�
 
 - 默认绑定 `127.0.0.1:8765`，端口冲突时顺序尝试后续端口。
 - 单进程、单用户。按会话/文件系统操作加锁。
-- `start.bat` 设置 `MKL_THREADING_LAYER=TBB` 并使用 `C:\pixi_env` 的解释器；找不到时回退
-  到 PATH 上的 `python`。
+- `start.bat` 不写死解释器路径：先尝试 PATH 上的 `python`（要求 3.11+），失败再回退到
+  `py`；`start.py` 只做依赖检查并给出安装命令，不自动安装。
 - 所有文件系统写操作都在后端；前端只通过 JSON API 操作。
 
 ## 4. 数据目录
@@ -311,6 +311,18 @@ AI 不再输出 diff，而是输出一段只调用 PatchBridge 补丁 API 的 Py
   保留在折叠区。
 - 归档 zip 内结构相同，读取脚本/报告按 member 流式读取。
 
+### 4.10 界面语言与 i18n
+
+- 后端以中文诊断文本为源 key，`i18n.MESSAGES_EN` 和动态消息正则负责英文；`tr()` 在 API
+  边界、`AppError`、会话详情、脚本报告和 mpatch 报告中翻译。未知 key 回退中文。
+- FastAPI 中间件读取 `Accept-Language`，用 `ContextVar` 设置请求级语言；默认中文，因此旧测试
+  和已有会话的行为不变。
+- 前端 `web/js/i18n.js` 提供字典和 `$t`；侧边栏底部切换语言，写入 `localStorage` 后重载页面。
+  `api.js` 发送当前语言的 `Accept-Language`，保证后端诊断和提示词与界面一致。
+- 内置提示词按语言选择：`prompts/default.md`、`prompts/python.md` 为中文，
+  `prompts/default_en.md`、`prompts/python_en.md` 为英文；自定义提示词路径优先。
+- 会话中保存的是生成时的 prompt 与回答；切换语言不会重写历史内容，只影响新请求和新打包。
+
 ## 5. 安全底线
 
 1. 所有写操作只在后端。
@@ -351,7 +363,7 @@ AI 不再输出 diff，而是输出一段只调用 PatchBridge 补丁 API 的 Py
 | Windows 10/11 | 双击 `start.bat` | Python 3.11+、Git、依赖包；可选 mpatch 1.8+ |
 | macOS / Linux | `PYTHONPATH=src python -m patchbridge --open` | Python 3.11+、Git、依赖包；可选 mpatch 1.8+ |
 
-`start.bat` 使用 CRLF 换行，并优先使用 `C:\pixi_env\.pixi\envs\default\python.exe`。
+`start.bat` 使用 CRLF 换行，不写死解释器路径：优先使用 `PATH` 中的 `python`，校验 Python 3.11+ 后回退到 `py`；依赖缺失时由 `start.py` 提示安装命令，不自动安装。
 前端 Vue 运行时已 vendored，不需要联网或 Node 构建。
 
 ## 8. 测试策略

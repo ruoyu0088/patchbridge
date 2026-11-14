@@ -37,6 +37,8 @@
 | 33 | Python 补丁保持原文件“无末尾换行” | `tests/test_scripting.py::test_no_final_newline_is_preserved` |
 | 34 | 脚本步骤/异常记录 AI 脚本行号 | `tests/test_scripting.py::test_script_steps_and_runtime_errors_carry_source_lines`、`test_syntax_error_reports_line` |
 | 35 | 无 `#` 的 Commit/Python 标题仍能正确分节 | `tests/test_parsing.py::test_plain_headings_without_hash_are_recognized` |
+| 36 | 中文/English 切换后界面、后端诊断和提示词一致 | `tests/test_i18n.py::test_english_errors_and_prompt_selection`、`test_english_profile_diagnostics`、`test_english_pack_uses_english_prompt` |
+| 37 | 英文导出标签不会回退中文 | `tests/test_i18n.py::test_english_export_labels` |
 
 ## 其他覆盖
 
@@ -51,7 +53,7 @@
 
 ## 手工冒烟
 
-1. 双击 `start.bat`，浏览器打开工程列表。
+1. 双击 `start.bat`，浏览器打开工程列表；用侧边栏底部切换到 English，确认界面、错误信息和下次打包提示词都变为英文，再切回中文。
 2. 新建 profile，打开文件树，搜索/勾选目录。
 3. 输入需求并打包，分别验证“复制完整文本”和“复制文件路径”。
 4. 以 Python 模式打包，粘贴含 `replace_text` + `assert_count` 的回答；确认自动执行、生成补丁，

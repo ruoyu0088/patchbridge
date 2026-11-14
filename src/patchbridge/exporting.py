@@ -8,6 +8,7 @@ from typing import Any
 from .diff_engine import DiffLine, canonical_patch, parse_unified_diff
 from .errors import AppError
 from .fsutil import decode_text_file, safe_target, sha256_bytes, split_lines_keep_eol
+from .i18n import tr
 from .sessions import SessionStore
 
 
@@ -91,28 +92,28 @@ def export_markdown(store: SessionStore, session_id: str) -> str:
     lines: list[str] = [
         f"# {meta.get('title') or session_id}",
         "",
-        f"- 会话 ID：`{session_id}`",
-        f"- 工程：{meta.get('project_name') or ''} (`{meta.get('root') or ''}`)",
-        f"- 创建时间：{meta.get('created_at') or ''}",
-        f"- 状态：{details.get('status') or ''}",
-        f"- 回答格式：{meta.get('mode') or 'diff'}",
-        f"- 打包文件数：{meta.get('file_count') or 0}",
-        f"- 打包字节数：{meta.get('total_bytes') or 0}",
+        f"- {tr('会话 ID')}：`{session_id}`",
+        f"- {tr('工程')}：{meta.get('project_name') or ''} (`{meta.get('root') or ''}`)",
+        f"- {tr('创建时间')}：{meta.get('created_at') or ''}",
+        f"- {tr('状态')}：{details.get('status') or ''}",
+        f"- {tr('回答格式')}：{meta.get('mode') or 'diff'}",
+        f"- {tr('打包文件数')}：{meta.get('file_count') or 0}",
+        f"- {tr('打包字节数')}：{meta.get('total_bytes') or 0}",
         "",
-        "## 需求",
+        f"## {tr('需求')}",
         "",
         details.get("requirement") or "",
         "",
-        "## 选中文件",
+        f"## {tr('选中文件')}",
         "",
     ]
     for item in selection.get("files") or []:
         lines.append(f"- `{item.get('path')}` ({item.get('size', 0)} bytes, sha256 `{item.get('sha256', '')}`)")
-    lines.extend(["", "## 修改说明", "", parsed.get("explanation") or "", ""])
+    lines.extend(["", f"## {tr('修改说明')}", "", parsed.get("explanation") or "", ""])
     if details.get("answer"):
         lines.extend(
             [
-                "## AI 回答原文",
+                f"## {tr('AI 回答原文')}",
                 "",
                 "```text",
                 details.get("answer").rstrip("\n"),
@@ -123,7 +124,7 @@ def export_markdown(store: SessionStore, session_id: str) -> str:
     if parsed.get("script"):
         lines.extend(
             [
-                "## Python 补丁脚本",
+                f"## {tr('Python 补丁脚本')}",
                 "",
                 "```python",
                 str(parsed.get("script") or "").rstrip("\n"),
@@ -131,20 +132,24 @@ def export_markdown(store: SessionStore, session_id: str) -> str:
                 "",
             ]
         )
-    lines.extend(["## Commit 建议", "", "```text", parsed.get("commit_message") or "", "```", ""])
-    warnings = parsed.get("warnings") or []
+    lines.extend(["## " + tr("Commit 建议"), "", "```text", parsed.get("commit_message") or "", "```", ""])
+    warnings = [tr(str(item)) for item in (parsed.get("warnings") or [])]
     if warnings:
-        lines.extend(["## 警告", ""])
+        lines.extend(["## " + tr("警告"), ""])
         lines.extend(f"- {warning}" for warning in warnings)
         lines.append("")
-    lines.extend(["## 文件补丁", ""])
+    lines.extend(["## " + tr("文件补丁"), ""])
     for patch in details.get("patches") or []:
         lines.extend(
             [
                 f"### `{patch.get('path')}`",
                 "",
-                f"新增 {patch.get('added', 0)} 行，删除 {patch.get('removed', 0)} 行"
-                + ("，新增文件" if patch.get("new_file") else ""),
+                tr(
+                    "新增 {added} 行，删除 {removed} 行",
+                    added=patch.get("added", 0),
+                    removed=patch.get("removed", 0),
+                )
+                + (tr("，新增文件") if patch.get("new_file") else ""),
                 "",
                 "```diff",
                 (patch.get("content") or "").rstrip("\n"),
@@ -152,7 +157,7 @@ def export_markdown(store: SessionStore, session_id: str) -> str:
                 "",
             ]
         )
-    lines.extend(["## 操作事件", ""])
+    lines.extend(["## " + tr("操作事件"), ""])
     for event in details.get("events") or []:
         lines.append(
             f"- `{event.get('at')}` **{event.get('type')}** "
@@ -182,21 +187,21 @@ def disk_diff(store: SessionStore, session_id: str) -> dict[str, Any]:
     if not active:
         return {
             "available": False,
-            "message": "会话尚未应用补丁，没有“应用后”快照可比较",
+            "message": tr("会话尚未应用补丁，没有“应用后”快照可比较"),
             "files": [],
         }
     latest = active[-1]
     data = latest.get("data") or {}
     manifest_rel = data.get("backup_manifest")
     if not manifest_rel:
-        return {"available": False, "message": "缺少备份清单", "files": []}
+        return {"available": False, "message": tr("缺少备份清单"), "files": []}
     manifest_path = (store.config.data_dir / Path(*str(manifest_rel).split("/"))).resolve()
     try:
         manifest_path.relative_to(store.config.data_dir.resolve())
     except ValueError:
         raise AppError("backup_invalid", "备份路径越界", status=500)
     if not manifest_path.exists():
-        return {"available": False, "message": "备份已被清理，无法生成内容差异", "files": []}
+        return {"available": False, "message": tr("备份已被清理，无法生成内容差异"), "files": []}
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     backup_dir = manifest_path.parent
     root = Path(store.meta(session_id).get("root") or "")
@@ -262,5 +267,5 @@ def disk_diff(store: SessionStore, session_id: str) -> dict[str, Any]:
         "available": True,
         "apply_id": data.get("apply_id"),
         "files": result,
-        "message": "没有差异" if not result else f"{len(result)} 个文件与“应用后”不同",
+        "message": tr("没有差异") if not result else tr("{count} 个文件与“应用后”不同", count=len(result)),
     }

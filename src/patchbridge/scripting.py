@@ -19,6 +19,7 @@ from typing import Any
 from .config import AppConfig
 from .diff_engine import canonical_patch, parse_unified_diff
 from .errors import AppError
+from .i18n import tr
 from .fsutil import (
     TextFileInfo,
     decode_text_file,
@@ -143,7 +144,7 @@ class ScriptStep:
             "api": self.api,
             "path": self.path,
             "status": self.status,
-            "message": self.message,
+            "message": tr(self.message),
             "expected": self.expected,
             "matched": self.matched,
             "line": self.line,
@@ -193,11 +194,11 @@ class ScriptResult:
     def to_dict(self, *, include_script: bool = False) -> dict[str, Any]:
         data = {
             "status": self.status,
-            "reason": self.reason,
-            "warnings": list(self.warnings),
+            "reason": tr(self.reason),
+            "warnings": [tr(item) for item in self.warnings],
             "steps": [step.to_dict() for step in self.steps],
             "stdout": self.stdout,
-            "error": self.error,
+            "error": tr(self.error),
             "error_line": self.error_line,
             "changes": list(self.changes),
             "elapsed_ms": self.elapsed_ms,

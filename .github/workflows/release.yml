@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install -e ".[test]"
+
+      - name: Verify tag matches project version
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          tag = os.environ["TAG_VERSION"].removeprefix("v")
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          init = pathlib.Path("src/patchbridge/__init__.py").read_text(encoding="utf-8")
+          if tag != version or f'__version__ = "{tag}"' not in init:
+              raise SystemExit(f"Tag v{tag} does not match project version {version}")
+          print(f"Releasing PatchBridge {version}")
+          PY
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build release archive
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ROOT="dist/PatchBridge-${VERSION}"
+          mkdir -p "$ROOT"
+          cp -R src web docs examples tests "$ROOT"/
+          cp README.md pyproject.toml requirements.txt start.bat start.py "$ROOT"/
+          (cd dist && zip -r "PatchBridge-${VERSION}.zip" "PatchBridge-${VERSION}")
+
+      - name: Write bilingual release notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > release-notes.md <<EOF
+          ## English
+
+          PatchBridge ${VERSION} is a local-first web app that turns manually copied Web AI answers into reviewed, backed-up, and reversible code patches.
+
+          - No model API calls and no browser automation: you stay in control of every copy and paste.
+          - Choose a Python patch script or a unified diff answer format per session.
+          - Review side-by-side diffs, then apply selected files with automatic backups and LIFO revert.
+          - Optional fuzzy patching with mpatch when your local executable is available.
+          - Session history, archive support, and project profiles.
+          - Automated DeepSeek input requires the companion plugin: https://github.com/ruoyu0088/deepseek-conversation-outline
+
+          Requirements: Python 3.11+ and Git. Install dependencies with \`python -m pip install -r requirements.txt\`, then double-click \`start.bat\`.
+
+          ## 中文
+
+          PatchBridge ${VERSION} 是一个本地优先的 Web 工具，把手工复制的 Web AI 回答转换为可审阅、可备份、可撤回的代码补丁。
+
+          - 不调用模型 API，不做浏览器自动化；复制和粘贴始终由你控制。
+          - 每个会话可选择 Python 补丁脚本或 unified diff 回答格式。
+          - 并排 diff 预览，按文件应用，自动备份，严格 LIFO 撤回。
+          - 本地安装 mpatch 后可选用模糊补丁。
+          - 支持会话历史、归档、工程 profile。
+          - 自动输入 DeepSeek 需要配套插件：https://github.com/ruoyu0088/deepseek-conversation-outline
+
+          运行要求：Python 3.11+ 和 Git。先执行 \`python -m pip install -r requirements.txt\` 安装依赖，再双击 \`start.bat\`。
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "dist/PatchBridge-${VERSION}.zip" \
+            --title "PatchBridge ${VERSION}" \
+            --notes-file release-notes.md

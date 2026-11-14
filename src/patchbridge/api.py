@@ -24,6 +24,15 @@ from .config import AppConfig
 from .errors import AppError
 from .exporting import combined_patch, disk_diff, export_markdown
 from .fsutil import read_text_file
+from .i18n import (
+    get_language,
+    language_from_header,
+    localize_profile_dict,
+    localize_session_details,
+    reset_language,
+    set_language,
+    tr,
+)
 from .mpatch import mpatch_version, resolve_mpatch
 from .packing import build_bundle
 from .profiles import (
@@ -154,6 +163,14 @@ def create_api(config: AppConfig) -> FastAPI:
     app.state.config = config
     app.state.store = store
 
+    @app.middleware("http")
+    async def language_middleware(request: Request, call_next):
+        token = set_language(language_from_header(request.headers.get("accept-language")))
+        try:
+            return await call_next(request)
+        finally:
+            reset_language(token)
+
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
@@ -169,7 +186,7 @@ def create_api(config: AppConfig) -> FastAPI:
                 "ok": False,
                 "error": {
                     "code": "validation_error",
-                    "message": "请求参数不合法",
+                    "message": tr("请求参数不合法"),
                     "details": exc.errors(),
                 },
             },
@@ -184,7 +201,7 @@ def create_api(config: AppConfig) -> FastAPI:
                 "ok": False,
                 "error": {
                     "code": "internal_error",
-                    "message": "服务器内部错误，请查看 logs/app.log",
+                    "message": tr("服务器内部错误，请查看 logs/app.log"),
                 },
             },
         )
@@ -197,12 +214,13 @@ def create_api(config: AppConfig) -> FastAPI:
     @app.get("/api/meta")
     def meta() -> dict[str, Any]:
         settings = config.load_settings()
-        prompt = config.resolve_prompt_path(settings)
+        prompt = config.resolve_prompt_path(settings, lang=get_language())
         return ok(
             {
                 "version": __version__,
                 "data_dir": str(config.data_dir),
                 "profiles_dir": str(config.profiles_dir),
+                "language": get_language(),
                 "prompt_path": str(prompt),
                 "prompt_exists": prompt.exists(),
             }
@@ -211,12 +229,13 @@ def create_api(config: AppConfig) -> FastAPI:
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         settings = config.load_settings()
-        prompt = config.resolve_prompt_path(settings)
-        python_prompt = config.resolve_prompt_path(settings, "python")
+        prompt = config.resolve_prompt_path(settings, lang=get_language())
+        python_prompt = config.resolve_prompt_path(settings, "python", lang=get_language())
         mpatch = resolve_mpatch(settings)
         return ok(
             {
                 "settings": settings,
+                "language": get_language(),
                 "prompt_path_resolved": str(prompt),
                 "prompt_exists": prompt.exists(),
                 "python_prompt_path_resolved": str(python_prompt),
@@ -240,22 +259,23 @@ def create_api(config: AppConfig) -> FastAPI:
     # --------------------------------------------------------------- projects
     @app.get("/api/projects")
     def get_projects() -> dict[str, Any]:
-        return ok({"projects": list_profiles(config.profiles_dir)})
+        projects = [localize_profile_dict(profile) for profile in list_profiles(config.profiles_dir)]
+        return ok({"projects": projects})
 
     @app.post("/api/projects")
     def post_project(body: ProjectBody) -> dict[str, Any]:
         profile = create_profile(config.profiles_dir, body.model_dump())
-        return ok({"project": profile.to_dict()})
+        return ok({"project": localize_profile_dict(profile.to_dict())})
 
     @app.get("/api/projects/{project_id}")
     def get_project(project_id: str) -> dict[str, Any]:
         profile = load_profile(config.profiles_dir, project_id)
-        return ok({"project": profile.to_dict()})
+        return ok({"project": localize_profile_dict(profile.to_dict())})
 
     @app.put("/api/projects/{project_id}")
     def put_project(project_id: str, body: ProjectBody) -> dict[str, Any]:
         profile = update_profile(config.profiles_dir, project_id, body.model_dump())
-        return ok({"project": profile.to_dict()})
+        return ok({"project": localize_profile_dict(profile.to_dict())})
 
     @app.delete("/api/projects/{project_id}")
     def remove_project(project_id: str) -> dict[str, Any]:
@@ -274,7 +294,7 @@ def create_api(config: AppConfig) -> FastAPI:
             files = [item for item in data["files"] if ql in item["path"].lower()]
             data["files"] = files
             data["summary"]["filtered_count"] = len(files)
-        return ok({"project": profile.to_dict(), **data})
+        return ok({"project": localize_profile_dict(profile.to_dict()), **data})
 
     @app.get("/api/projects/{project_id}/selection")
     def get_selection(project_id: str) -> dict[str, Any]:
@@ -302,7 +322,7 @@ def create_api(config: AppConfig) -> FastAPI:
                 details={"files": missing[:100]},
             )
         mode = body.mode if body.mode in {"diff", "python"} else "diff"
-        prompt_path = config.resolve_prompt_path(settings, mode)
+        prompt_path = config.resolve_prompt_path(settings, mode, lang=get_language())
         if not prompt_path.exists():
             raise AppError(
                 "prompt_missing",
@@ -368,7 +388,7 @@ def create_api(config: AppConfig) -> FastAPI:
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict[str, Any]:
-        return ok(store.details(session_id))
+        return ok(localize_session_details(store.details(session_id)))
 
     @app.get("/api/sessions/{session_id}/bundle")
     def get_bundle(session_id: str) -> PlainTextResponse:
@@ -389,7 +409,7 @@ def create_api(config: AppConfig) -> FastAPI:
                 "parsed": parsed,
                 "patches": details.get("patches") or [],
                 "warnings": (parsed or {}).get("warnings") or [],
-                "session": details,
+                "session": localize_session_details(details),
             }
         )
 
@@ -625,7 +645,10 @@ def create_api(config: AppConfig) -> FastAPI:
     @app.get("/api/auto-deepseek/status")
     def get_auto_deepseek_status() -> dict[str, Any]:
         with auto_lock:
-            return ok(dict(auto_state))
+            state = dict(auto_state)
+        if isinstance(state.get("message"), str):
+            state["message"] = tr(state["message"])
+        return ok(state)
 
     # ------------------------------------------------------------------ index
     @app.get("/api/index/status")

@@ -1,4 +1,5 @@
 import { reactive } from './vue.js';
+import { t } from './i18n.js';
 
 export const ui = reactive({
   toast: null,
@@ -23,10 +24,10 @@ export function notify(message, type = 'info') {
 export function confirmDialog(options) {
   return new Promise((resolve) => {
     ui.confirm = {
-      title: options.title || '请确认',
+      title: options.title || t('请确认'),
       message: options.message || '',
-      confirmText: options.confirmText || '确认',
-      cancelText: options.cancelText || '取消',
+      confirmText: options.confirmText || t('确认'),
+      cancelText: options.cancelText || t('取消'),
       danger: Boolean(options.danger),
       checks: options.checks || null,
       resolve,
@@ -55,54 +56,50 @@ export function shortDate(value) {
 }
 
 export function statusText(status) {
-  return (
-    {
-      packed: '待 AI 回答',
-      parsed: '已解析',
-      applied: '已应用',
-      reverted: '已撤回',
-      abandoned: '已放弃',
-      corrupt: '数据损坏',
-    }[status] || status || '未知'
-  );
+  const labels = {
+    packed: t('待 AI 回答'),
+    parsed: t('已解析'),
+    applied: t('已应用'),
+    reverted: t('已撤回'),
+    abandoned: t('已放弃'),
+    corrupt: t('数据损坏'),
+  };
+  return labels[status] || status || t('未知');
 }
 
 export function hashText(value) {
-  return (
-    {
-      ok: 'hash 一致',
-      changed: 'hash 变化',
-      missing: '文件缺失',
-      new: '新增文件',
-      unselected: '未选中',
-    }[value] || value || ''
-  );
+  const labels = {
+    ok: t('hash 一致'),
+    changed: t('hash 变化'),
+    missing: t('文件缺失'),
+    new: t('新增文件'),
+    unselected: t('未选中'),
+  };
+  return labels[value] || value || '';
 }
 
 export function applyText(value) {
-  return (
-    {
-      ok: '可应用',
-      conflict: '冲突',
-      unsupported: '不支持',
-    }[value] || value || '未检查'
-  );
+  const labels = {
+    ok: t('可应用'),
+    conflict: t('冲突'),
+    unsupported: t('不支持'),
+  };
+  return labels[value] || value || t('未检查');
 }
 
 export function scopeText(value) {
-  return (
-    {
-      ok: '范围内',
-      outside: '工程外',
-      excluded: '被 profile 排除',
-    }[value] || value || ''
-  );
+  const labels = {
+    ok: t('范围内'),
+    outside: t('工程外'),
+    excluded: t('被 profile 排除'),
+  };
+  return labels[value] || value || '';
 }
 
-export async function copyText(text, label = '内容') {
+export async function copyText(text, label = t('内容')) {
   try {
     await navigator.clipboard.writeText(text);
-    notify(`${label}已复制到剪贴板`, 'success');
+    notify(t('{label}已复制到剪贴板', { label }), 'success');
   } catch (err) {
     const area = document.createElement('textarea');
     area.value = text;
@@ -113,9 +110,9 @@ export async function copyText(text, label = '内容') {
     area.select();
     try {
       document.execCommand('copy');
-      notify(`${label}已复制到剪贴板`, 'success');
+      notify(t('{label}已复制到剪贴板', { label }), 'success');
     } catch (fallbackError) {
-      notify('复制失败，请手工选择文本', 'error');
+      notify(t('复制失败，请手工选择文本'), 'error');
     } finally {
       area.remove();
     }
